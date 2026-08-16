@@ -39,9 +39,16 @@ from .models.review import ReviewAnalysis
 from .models.root_cause import RootCauseAnalysis
 from .models.test_result import TestResult
 from .models.ticket import TicketAnalysis
+from .models.support_case import SupportCase
+from .models.organization import OrganizationProfile
+from .models.investigation_artifacts import InvestigationSummary
+from .models.planning import PlanningAssessment
+from .models.resolution_bundle import ResolutionBundle
+from .execution.contracts import EngineeringExecutionResult
 from .models.validation import ValidationAnalysis
 from .models.workflow_control import WorkflowControl
 from .models.workflow_summary import WorkflowSummary
+from .orchestration.contracts import ForkJoinResult
 
 
 GateName = Literal[
@@ -53,6 +60,7 @@ GateName = Literal[
     "PUBLISH_AUTHORIZATION",
     "EXTERNAL_OPERATION",
     "HUMAN_REVIEW",
+    "ORCHESTRATION",
 ]
 GateRoute = Literal[
     "CONTINUE",
@@ -138,6 +146,16 @@ class SupportMasterState(BaseModel):
     # Control-plane lifecycle and traceability. These fields are deliberately
     # separate from the LLM-produced workflow outputs above.
     run_id: str = Field(default_factory=lambda: str(uuid4()))
+    case_id: Optional[str] = None
+    support_case: Optional[SupportCase] = None
+    tenant_id: str = "default"
+    initiated_by: str | None = None
+    organization_id: str = "default"
+    organization_profile: Optional[OrganizationProfile] = None
+    investigation_summary: Optional[InvestigationSummary] = None
+    planning_assessment: Optional[PlanningAssessment] = None
+    engineering_execution: Optional[EngineeringExecutionResult] = None
+    resolution_bundle: Optional[ResolutionBundle] = None
     ticket_id: Optional[str] = None
     current_stage: Optional[str] = None
     policy_version: str = "v1"
@@ -148,6 +166,8 @@ class SupportMasterState(BaseModel):
     operation_receipts: list[ExternalOperationReceipt] = Field(default_factory=list)
     pending_human_review: Optional[HumanReviewTask] = None
     human_review_history: list[HumanReviewDecision] = Field(default_factory=list)
+    fork_join_results: list[ForkJoinResult] = Field(default_factory=list)
+    integration_results: dict[str, Any] = Field(default_factory=dict)
 
     last_gate_decision: Optional["GateDecision"] = Field(default=None)
     terminal_status: Optional[TerminalStatus] = None

@@ -1,0 +1,11 @@
+{
+  "id": "AUTH-1001",
+  "summary": "SSO callback returns an error",
+  "body": "Enterprise users are redirected back to the login page after completing SSO.",
+  "reporter": "support@example.org",
+  "priority": "high",
+  "product": "Identity Gateway",
+  "environment": "production",
+  "steps": ["Open the application", "Choose SSO", "Complete identity-provider login", "Observe redirect"],
+  "impact": "New enterprise users cannot access the application."
+}

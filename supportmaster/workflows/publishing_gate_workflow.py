@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from google.adk.agents import Agent
 from google.adk.agents.context import Context
-from google.adk.workflow import START, Workflow, node
+from google.adk.workflow import START, JoinNode, Workflow, node
 
 from ..agents.audit_agent import audit_agent
 from ..agents.code_change_agent import code_change_agent
@@ -42,11 +42,13 @@ from ..control_gates import (
     evaluate_validation_gate,
 )
 from ..workflow_state import (
+    GateDecision,
     SupportMasterState,
     append_gate_history,
     append_policy_decision,
     issue_authorization,
 )
+from .orchestration_nodes import investigation_evidence_fan_in
 from .terminal_nodes import autonomous_safety_stop
 
 
@@ -218,8 +220,11 @@ def final_audit_gate(ctx: Context) -> dict:
 def create_publishing_gate_workflow(
     model_name: str | None = None,
     publication_executor: PublicationExecutor | None = None,
+    max_concurrency: int = 2,
 ) -> Workflow:
     """Create the complete gated graph through final audit routing."""
+    if max_concurrency < 2:
+        raise ValueError("max_concurrency must be at least two for read-only fan-out.")
     selected_model = select_model(model_name)
     ticket = _clone_agent(ticket_analysis_agent, selected_model)
     investigation = _clone_agent(investigation_agent, selected_model)
@@ -242,6 +247,7 @@ def create_publishing_gate_workflow(
     verified_publication_executor = _build_verified_publication_executor(
         publication_executor
     )
+    investigation_evidence_join = JoinNode(name="investigation_evidence_join")
 
     return Workflow(
         name="supportmaster_publishing_gate",
@@ -251,6 +257,7 @@ def create_publishing_gate_workflow(
             "and final audit gates."
         ),
         state_schema=SupportMasterState,
+        max_concurrency=max_concurrency,
         edges=[
             (
                 START,
@@ -259,13 +266,23 @@ def create_publishing_gate_workflow(
                 duplicate,
                 duplicate_work_gate,
                 {
-                    "CONTINUE": evidence,
+                    "CONTINUE": (evidence, repository),
                     "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (
-                evidence,
-                repository,
+                (evidence, repository),
+                investigation_evidence_join,
+            ),
+            (
+                investigation_evidence_join,
+                investigation_evidence_fan_in,
+                {
+                    "CONTINUE": root_cause,
+                    "SAFETY_STOP": autonomous_safety_stop,
+                },
+            ),
+            (
                 root_cause,
                 root_cause_confidence_check,
                 remediation,

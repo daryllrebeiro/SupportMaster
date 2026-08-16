@@ -51,6 +51,20 @@ class ImplementationGateWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(next_after_plan, ["implementation_agent"])
 
+    def test_read_only_investigation_fans_out_before_root_cause(self) -> None:
+        workflow = create_implementation_gate_workflow()
+        graph = workflow.graph
+        assert graph is not None
+        self.assertEqual(
+            graph.get_next_pending_nodes("duplicate_work_gate", "CONTINUE"),
+            ["evidence_agent", "repository_agent"],
+        )
+        self.assertEqual(
+            graph.get_next_pending_nodes("investigation_evidence_fan_in", "CONTINUE"),
+            ["root_cause_agent"],
+        )
+        self.assertEqual(workflow.max_concurrency, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

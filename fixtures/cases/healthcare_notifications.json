@@ -1,0 +1,9 @@
+{
+  "ticket_id": "CARE-77",
+  "title": "Appointment reminders are not delivered",
+  "details": "Patients at two clinics did not receive SMS reminders for scheduled visits.",
+  "customer": "Example Health Network",
+  "priority": "urgent",
+  "service": "Notification Service",
+  "reproduction": "Create an appointment\nEnable SMS reminders\nWait for scheduled notification"
+}

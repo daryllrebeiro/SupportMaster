@@ -1,0 +1,10 @@
+{
+  "case_id": "STORE-204",
+  "subject": "Inventory synchronization is delayed",
+  "description": "The warehouse dashboard shows stale stock counts after a supplier update.",
+  "requester": "operations@example.org",
+  "severity": "medium",
+  "service": "Inventory Sync",
+  "expected": "Stock changes appear in the dashboard within five minutes.",
+  "actual": "Some locations remain stale for more than an hour."
+}

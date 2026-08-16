@@ -73,6 +73,27 @@ class PublishingGateWorkflowTests(unittest.TestCase):
         self.assertIn("audit_agent", node_names)
         self.assertIn("workflow_control_agent", node_names)
 
+    def test_read_only_investigation_fans_out_and_joins_before_root_cause(self) -> None:
+        self.assertEqual(
+            self.graph.get_next_pending_nodes("duplicate_work_gate", "CONTINUE"),
+            ["evidence_agent", "repository_agent"],
+        )
+        self.assertEqual(
+            self.graph.get_next_pending_nodes("evidence_agent", None),
+            ["investigation_evidence_join"],
+        )
+        self.assertEqual(
+            self.graph.get_next_pending_nodes("repository_agent", None),
+            ["investigation_evidence_join"],
+        )
+        self.assertEqual(
+            self.graph.get_next_pending_nodes("investigation_evidence_fan_in", "CONTINUE"),
+            ["root_cause_agent"],
+        )
+
+    def test_workflow_bounds_concurrency_for_read_only_fan_out(self) -> None:
+        self.assertEqual(self.workflow.max_concurrency, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

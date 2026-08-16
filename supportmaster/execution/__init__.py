@@ -14,6 +14,8 @@ from .publication import (
     persist_publication_receipts,
 )
 from .contracts import PublicationExecutionResult
+from .contracts import EngineeringExecutionResult
+from .engineering import CodeChangeAdapter, ControlledEngineeringExecutor, persist_engineering_receipts
 
 __all__ = [
     "GitHubAdapter",
@@ -26,4 +28,8 @@ __all__ = [
     "build_github_publish_result",
     "persist_publication_receipts",
     "PublicationExecutionResult",
+    "CodeChangeAdapter",
+    "ControlledEngineeringExecutor",
+    "EngineeringExecutionResult",
+    "persist_engineering_receipts",
 ]

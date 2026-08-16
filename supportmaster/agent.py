@@ -12,11 +12,13 @@ from .workflows.publishing_gate_workflow import create_publishing_gate_workflow
 def create_root_agent(
     model_name: str | None = None,
     publication_executor: PublicationExecutor | None = None,
+    max_concurrency: int = 2,
 ) -> Workflow:
     """Create an isolated, conditionally gated workflow for one run."""
     return create_publishing_gate_workflow(
         select_model(model_name),
         publication_executor=publication_executor,
+        max_concurrency=max_concurrency,
     )
 
 

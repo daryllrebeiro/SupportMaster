@@ -1,0 +1,3 @@
+deploy v4.8.0 introduced report-generation cancellation handling
+ReportGenerationService.java: added async cancellation branch
+ReportQuery.java: connection close is not present on the cancellation path

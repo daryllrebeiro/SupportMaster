@@ -30,3 +30,29 @@ from the matching field in `SupportMasterState`.
 Gate-only fields are `last_gate_decision` and `terminal_status`; they are not
 agent output keys. A blocked autonomous run records `terminal_status=SAFETY_STOP`
 and the deterministic `autonomous_stop` payload instead of waiting for a human.
+
+The control-plane foundation also includes lifecycle and traceability fields:
+
+- `run_id`, `ticket_id`, `current_stage`, and `policy_version`
+- `evidence_bundle` and `evidence_records` for sanitized, hash-addressed source artifacts
+- `terminal_outcome` for completed, blocked, paused, safety-stop, and execution-failure outcomes
+- `gate_history` for append-only deterministic gate records
+- `policy_decisions` for action-level ALLOW/DENY/PAUSE/REQUEST_INFORMATION results
+- `authorizations` for scoped implementation, publish, or human-approved grants
+- `operation_receipts` for evidence returned by future Git/GitHub/CI executors
+- `pending_human_review` and `human_review_history` for durable, scoped pause/resume
+
+An `INSUFFICIENT_EVIDENCE` duplicate result can remain on the read-only
+investigation path, but it cannot authorize implementation or publication.
+
+Verified execution adapters write `ExternalOperationReceipt` records for Git
+preflight, commit, push, pull-request creation, pull-request verification, and
+test execution. A publication executor rejects missing, expired, mismatched,
+or inactive `PUBLISH` grants before invoking an adapter and re-checks the grant
+before each mutating operation.
+
+Evidence ingestion hashes the original bytes but stores only redacted content.
+Each record retains its source URI, capture time, classification, confidence,
+size, and redaction flags. `EvidenceIngestor.attach_to_state()` writes the
+bundle, records, and generated `EvidenceAnalysis` as plain dictionaries so the
+same provenance contract works in ADK state and durable run snapshots.

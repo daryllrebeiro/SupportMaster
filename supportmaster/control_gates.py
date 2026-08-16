@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .models.root_cause import RootCauseAnalysis
+from .models.control import ActionType, PolicyDecision
 from .workflow_state import GateDecision
 
 
@@ -66,11 +67,6 @@ def evaluate_duplicate_gate(state: Mapping[str, Any]) -> GateDecision:
 def evaluate_review_gate(state: Mapping[str, Any]) -> GateDecision:
     """Authorize implementation only after a complete safe review."""
     status = _value(state, "review_analysis", "review_status")
-    best_effort_duplicate = (
-        state.get("autonomous_best_effort") is True
-        and _value(state, "duplicate_work_analysis", "duplicate_status")
-        == "INSUFFICIENT_EVIDENCE"
-    )
     required_checks = (
         "root_cause_sufficiently_established",
         "remediation_alignment",
@@ -83,7 +79,6 @@ def evaluate_review_gate(state: Mapping[str, Any]) -> GateDecision:
         check
         for check in required_checks
         if _value(state, "review_analysis", check) is not True
-        and not (check == "duplicate_work_safety_passed" and best_effort_duplicate)
     ]
     actionable_high_findings = []
     findings = state.get("review_analysis")
@@ -100,11 +95,6 @@ def evaluate_review_gate(state: Mapping[str, Any]) -> GateDecision:
             route="READY_FOR_IMPLEMENTATION",
             reason="Review approved the change and all implementation safety checks passed.",
             evidence_keys=["review_analysis"],
-            warnings=(
-                ["DUPLICATE_CHECK_INCOMPLETE"]
-                if best_effort_duplicate
-                else []
-            ),
         )
 
     return GateDecision(
@@ -118,6 +108,173 @@ def evaluate_review_gate(state: Mapping[str, Any]) -> GateDecision:
         ],
         required_actions=["Resolve review blockers and obtain explicit approval."],
         evidence_keys=["review_analysis"],
+    )
+
+
+def evaluate_action_policy(
+    state: Mapping[str, Any],
+    action: ActionType,
+    *,
+    policy_version: str = "v1",
+) -> PolicyDecision:
+    """Authorize a high-impact action using deterministic evidence only.
+
+    This is intentionally independent of the LLM control agents. A policy
+    decision is a prerequisite for a future executor; it does not perform an
+    external operation itself.
+    """
+    duplicate_status = _value(
+        state, "duplicate_work_analysis", "duplicate_status"
+    )
+
+    if action == "PRODUCTION":
+        return PolicyDecision(
+            action=action,
+            disposition="PAUSE",
+            reason="Production actions require explicit human authorization.",
+            blocking_reasons=["PRODUCTION_ACTION_REQUIRES_HUMAN_APPROVAL"],
+            required_actions=["Obtain scoped human approval for the production action."],
+            policy_version=policy_version,
+        )
+
+    if action == "INVESTIGATION":
+        return PolicyDecision(
+            action=action,
+            disposition="ALLOW",
+            reason="Investigation is read-only and may proceed autonomously.",
+            policy_version=policy_version,
+        )
+
+    if action in {"IMPLEMENTATION", "PUBLISH"} and duplicate_status != "NO_DUPLICATE_FOUND":
+        reason = (
+            "Duplicate-work verification is incomplete."
+            if duplicate_status == "INSUFFICIENT_EVIDENCE"
+            else "Duplicate-work verification did not establish a safe clean result."
+        )
+        disposition = (
+            "REQUEST_INFORMATION"
+            if duplicate_status == "INSUFFICIENT_EVIDENCE"
+            else "DENY"
+        )
+        return PolicyDecision(
+            action=action,
+            disposition=disposition,
+            reason=reason,
+            blocking_reasons=["NO_VERIFIED_DUPLICATE_CHECK"],
+            required_actions=["Complete and verify duplicate-work search."],
+            evidence_keys=["duplicate_work_analysis"],
+            policy_version=policy_version,
+        )
+
+    if action == "IMPLEMENTATION":
+        review = evaluate_review_gate(state)
+        if review.route != "READY_FOR_IMPLEMENTATION":
+            return PolicyDecision(
+                action=action,
+                disposition="DENY",
+                reason="Implementation review has not authorized source modification.",
+                blocking_reasons=review.blocking_reasons or ["IMPLEMENTATION_REVIEW_NOT_APPROVED"],
+                required_actions=review.required_actions,
+                evidence_keys=review.evidence_keys,
+                policy_version=policy_version,
+            )
+        return PolicyDecision(
+            action=action,
+            disposition="ALLOW",
+            reason="Verified duplicate check and implementation review authorize modification.",
+            evidence_keys=["duplicate_work_analysis", "review_analysis"],
+            policy_version=policy_version,
+        )
+
+    if action == "PUBLISH":
+        validation = evaluate_validation_gate(state)
+        publish = _value(state, "publish_plan", "publication_allowed") is True
+        if validation.route != "READY_FOR_PUBLISH" or not publish:
+            blockers = list(validation.blocking_reasons)
+            if not publish:
+                blockers.append("PUBLISH_PLAN_NOT_AUTHORIZED")
+            return PolicyDecision(
+                action=action,
+                disposition="DENY",
+                reason="Publishing requires verified validation, tests, and an authorized publish plan.",
+                blocking_reasons=blockers,
+                required_actions=["Pass validation/testing and obtain publish authorization."],
+                evidence_keys=["validation_analysis", "test_result", "publish_plan"],
+                policy_version=policy_version,
+            )
+        return PolicyDecision(
+            action=action,
+            disposition="ALLOW",
+            reason="Validation, testing, duplicate safety, and publish authorization passed.",
+            evidence_keys=["duplicate_work_analysis", "validation_analysis", "test_result", "publish_plan"],
+            policy_version=policy_version,
+        )
+
+    if action == "CLOSE_TICKET":
+        return PolicyDecision(
+            action=action,
+            disposition="PAUSE",
+            reason="Ticket closure requires explicit resolution evidence and human policy approval.",
+            blocking_reasons=["TICKET_CLOSURE_REQUIRES_EXPLICIT_APPROVAL"],
+            required_actions=["Review resolution evidence before closing the ticket."],
+            policy_version=policy_version,
+        )
+
+    # Customer communication can be generated, but closure/deployment claims
+    # remain constrained by the response and audit gates.
+    return PolicyDecision(
+        action=action,
+        disposition="ALLOW",
+        reason="Customer response generation is non-mutating and remains subject to final audit.",
+        policy_version=policy_version,
+    )
+
+
+def _authorization_gate_decision(
+    state: Mapping[str, Any],
+    *,
+    action: ActionType,
+    gate: str,
+) -> tuple[PolicyDecision, GateDecision]:
+    """Convert an action policy result into a graph-safe route decision."""
+    policy = evaluate_action_policy(state, action)
+    if policy.disposition == "ALLOW":
+        route = "READY_FOR_IMPLEMENTATION" if action == "IMPLEMENTATION" else "READY_FOR_PUBLISH"
+        return policy, GateDecision(
+            gate=gate,
+            route=route,
+            reason=policy.reason,
+            evidence_keys=policy.evidence_keys,
+        )
+    return policy, GateDecision(
+        gate=gate,
+        route="SAFETY_STOP",
+        reason=policy.reason,
+        blocking_reasons=policy.blocking_reasons,
+        required_actions=policy.required_actions,
+        evidence_keys=policy.evidence_keys,
+    )
+
+
+def evaluate_implementation_authorization_gate(
+    state: Mapping[str, Any],
+) -> tuple[PolicyDecision, GateDecision]:
+    """Authorize source modification after review and duplicate safety."""
+    return _authorization_gate_decision(
+        state,
+        action="IMPLEMENTATION",
+        gate="IMPLEMENTATION_AUTHORIZATION",
+    )
+
+
+def evaluate_publish_authorization_gate(
+    state: Mapping[str, Any],
+) -> tuple[PolicyDecision, GateDecision]:
+    """Authorize external publication only after the publish plan exists."""
+    return _authorization_gate_decision(
+        state,
+        action="PUBLISH",
+        gate="PUBLISH_AUTHORIZATION",
     )
 
 

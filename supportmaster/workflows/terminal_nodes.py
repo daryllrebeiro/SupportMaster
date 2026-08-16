@@ -23,5 +23,6 @@ def autonomous_safety_stop(ctx: Context) -> dict:
     )
     ctx.state["autonomous_stop"] = stop.model_dump()
     ctx.state["terminal_status"] = "SAFETY_STOP"
+    ctx.state["terminal_outcome"] = "SAFETY_STOP"
     ctx.route = "SAFETY_STOP"
     return stop.model_dump()

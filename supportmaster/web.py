@@ -6,15 +6,19 @@ import argparse
 import asyncio
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai import types
 
 from .agent import create_root_agent
 from .config import DEFAULT_MODEL, supported_models
+from .persistence import SQLiteRunStore
+from .workflow_state import SupportMasterState
 
 
 MOCK_JIRA_ISSUE = """Jira key: FIN-1847
@@ -188,12 +192,21 @@ async def run_workflow(issue: str, model_name: str) -> str:
 
     app_name = "supportmaster-local"
     user_id = "local-demo-user"
-    session_service = InMemorySessionService()
+    session_db = Path(
+        os.getenv("SUPPORTMASTER_SESSION_DB", ".supportmaster/adk_sessions.db")
+    )
+    run_db = Path(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+    session_db.parent.mkdir(parents=True, exist_ok=True)
+    session_service = SqliteSessionService(str(session_db))
+    run_store = SQLiteRunStore(run_db)
+    run_id = str(uuid4())
     session = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
-        session_id=str(uuid4()),
+        state={"run_id": run_id},
+        session_id=run_id,
     )
+    run_store.create_run(SupportMasterState(run_id=session.id))
     runner = Runner(
         app_name=app_name,
         agent=create_root_agent(model_name),
@@ -212,6 +225,26 @@ async def run_workflow(issue: str, model_name: str) -> str:
         text = "\n".join(part.text for part in event.content.parts if part.text)
         if text:
             events.append(f"[{event.author}]\n{text}")
+            run_store.append_event(
+                session.id,
+                "ADK_EVENT",
+                {"author": event.author, "text": text},
+            )
+
+    try:
+        persisted_session = await session_service.get_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session.id,
+        )
+        state = SupportMasterState.model_validate(persisted_session.state)
+        run_store.save_state(state, event_type="ADK_RUN_SNAPSHOT")
+    except Exception as error:
+        run_store.append_event(
+            session.id,
+            "ADK_RUN_SNAPSHOT_FAILED",
+            {"error": f"{type(error).__name__}: {error}"},
+        )
 
     return "\n\n".join(events) or "The workflow returned no text events."
 

@@ -19,8 +19,26 @@ class ImplementationGateWorkflowTests(unittest.TestCase):
             "implementation_review_gate", "SAFETY_STOP"
         )
 
-        self.assertEqual(next_on_approval, ["code_change_agent"])
+        self.assertEqual(next_on_approval, ["implementation_authorization_gate"])
         self.assertEqual(next_on_block, ["autonomous_safety_stop"])
+
+    def test_implementation_authorization_must_pass_before_code_change(self) -> None:
+        workflow = create_implementation_gate_workflow("gemini-3.6-flash")
+
+        graph = workflow.graph
+        assert graph is not None
+        self.assertEqual(
+            graph.get_next_pending_nodes(
+                "implementation_authorization_gate", "READY_FOR_IMPLEMENTATION"
+            ),
+            ["code_change_agent"],
+        )
+        self.assertEqual(
+            graph.get_next_pending_nodes(
+                "implementation_authorization_gate", "SAFETY_STOP"
+            ),
+            ["autonomous_safety_stop"],
+        )
 
     def test_workflow_contains_implementation_after_code_change_plan(self) -> None:
         workflow = create_implementation_gate_workflow()

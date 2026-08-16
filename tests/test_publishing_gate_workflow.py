@@ -25,6 +25,32 @@ class PublishingGateWorkflowTests(unittest.TestCase):
             ["autonomous_safety_stop"],
         )
 
+    def test_publish_authorization_must_pass_before_github_mutation(self) -> None:
+        self.assertEqual(
+            self.graph.get_next_pending_nodes("publish_agent", None),
+            ["publish_authorization_gate"],
+        )
+        self.assertEqual(
+            self.graph.get_next_pending_nodes(
+                "publish_authorization_gate", "READY_FOR_PUBLISH"
+            ),
+            ["verified_publication_executor"],
+        )
+        self.assertEqual(
+            self.graph.get_next_pending_nodes(
+                "publish_authorization_gate", "SAFETY_STOP"
+            ),
+            ["autonomous_safety_stop"],
+        )
+
+    def test_unconfigured_executor_cannot_claim_publication(self) -> None:
+        self.assertEqual(
+            self.graph.get_next_pending_nodes(
+                "verified_publication_executor", "SAFETY_STOP"
+            ),
+            ["autonomous_safety_stop"],
+        )
+
     def test_audit_must_approve_before_completion(self) -> None:
         self.assertEqual(
             self.graph.get_next_pending_nodes("final_audit_gate", "COMPLETED"),
@@ -41,7 +67,9 @@ class PublishingGateWorkflowTests(unittest.TestCase):
         node_names = {node.name for node in self.graph.nodes}
         self.assertIn("validation_agent", node_names)
         self.assertIn("test_result_agent", node_names)
-        self.assertIn("github_publish_agent", node_names)
+        self.assertIn("verified_publication_executor", node_names)
+        self.assertIn("implementation_authorization_gate", node_names)
+        self.assertIn("publish_authorization_gate", node_names)
         self.assertIn("audit_agent", node_names)
         self.assertIn("workflow_control_agent", node_names)
 

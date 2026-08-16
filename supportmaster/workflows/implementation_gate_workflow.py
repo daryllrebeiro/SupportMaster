@@ -17,7 +17,17 @@ from ..agents.review_agent import review_agent
 from ..agents.root_cause_agent import root_cause_agent
 from ..agents.ticket_agent import ticket_analysis_agent
 from ..config import select_model
-from ..control_gates import evaluate_duplicate_gate, evaluate_review_gate
+from ..control_gates import (
+    evaluate_duplicate_gate,
+    evaluate_implementation_authorization_gate,
+    evaluate_review_gate,
+)
+from ..workflow_state import (
+    SupportMasterState,
+    append_gate_history,
+    append_policy_decision,
+    issue_authorization,
+)
 from .terminal_nodes import autonomous_safety_stop
 
 
@@ -46,6 +56,26 @@ def implementation_review_gate(ctx: Context) -> dict:
     return decision.model_dump()
 
 
+@node(name="implementation_authorization_gate")
+def implementation_authorization_gate(ctx: Context) -> dict:
+    """Issue a scoped implementation grant after deterministic policy passes."""
+    policy, decision = evaluate_implementation_authorization_gate(
+        ctx.state.to_dict()
+    )
+    append_policy_decision(ctx.state, policy)
+    record = append_gate_history(ctx.state, decision)
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    if policy.disposition == "ALLOW":
+        issue_authorization(
+            ctx.state,
+            scope="IMPLEMENTATION",
+            decision=policy,
+            gate_decision_id=record.decision_id,
+        )
+    ctx.route = decision.route
+    return {"policy": policy.model_dump(), "gate": decision.model_dump()}
+
+
 def create_implementation_gate_workflow(
     model_name: str | None = None,
 ) -> Workflow:
@@ -68,6 +98,7 @@ def create_implementation_gate_workflow(
             "SupportMaster investigation and remediation workflow with duplicate "
             "and implementation safety gates."
         ),
+        state_schema=SupportMasterState,
         edges=[
             (
                 START,
@@ -87,6 +118,13 @@ def create_implementation_gate_workflow(
                 remediation,
                 review,
                 implementation_review_gate,
+                {
+                    "READY_FOR_IMPLEMENTATION": implementation_authorization_gate,
+                    "SAFETY_STOP": autonomous_safety_stop,
+                },
+            ),
+            (
+                implementation_authorization_gate,
                 {
                     "READY_FOR_IMPLEMENTATION": code_change,
                     "SAFETY_STOP": autonomous_safety_stop,

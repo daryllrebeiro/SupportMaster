@@ -7,19 +7,30 @@ structured state instead of parsing agent prose.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from collections.abc import MutableMapping
+from typing import Any, Literal, Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models.audit import WorkflowAudit
 from .models.code_change import CodeChangeResult
+from .models.control import (
+    AuthorizationGrant,
+    ExternalOperationReceipt,
+    GateDecisionRecord,
+    PolicyDecision,
+    TerminalOutcome,
+)
 from .models.customer_response import CustomerResponse
 from .models.duplicate_work import DuplicateWorkAnalysis
 from .models.evidence import EvidenceAnalysis
+from .models.evidence_record import EvidenceBundle, EvidenceRecord
 from .models.escalation import EscalationAnalysis
 from .models.github_publish import GitHubPublishResult
 from .models.implementation import ImplementationResult
 from .models.investigation import InvestigationPlan
+from .models.human_review import HumanReviewDecision, HumanReviewTask
 from .models.publish import PublishPlan
 from .models.remediation import RemediationPlan
 from .models.repository import RepositoryAnalysis
@@ -33,7 +44,16 @@ from .models.workflow_control import WorkflowControl
 from .models.workflow_summary import WorkflowSummary
 
 
-GateName = Literal["DUPLICATE_WORK", "REVIEW", "VALIDATION", "AUDIT"]
+GateName = Literal[
+    "DUPLICATE_WORK",
+    "REVIEW",
+    "VALIDATION",
+    "AUDIT",
+    "IMPLEMENTATION_AUTHORIZATION",
+    "PUBLISH_AUTHORIZATION",
+    "EXTERNAL_OPERATION",
+    "HUMAN_REVIEW",
+]
 GateRoute = Literal[
     "CONTINUE",
     "STOP",
@@ -95,6 +115,8 @@ class SupportMasterState(BaseModel):
     investigation_plan: Optional[InvestigationPlan] = None
     duplicate_work_analysis: Optional[DuplicateWorkAnalysis] = None
     evidence_analysis: Optional[EvidenceAnalysis] = None
+    evidence_bundle: Optional[EvidenceBundle] = None
+    evidence_records: list[EvidenceRecord] = Field(default_factory=list)
     repository_analysis: Optional[RepositoryAnalysis] = None
     root_cause_analysis: Optional[RootCauseAnalysis] = None
     remediation_plan: Optional[RemediationPlan] = None
@@ -113,6 +135,20 @@ class SupportMasterState(BaseModel):
     workflow_control: Optional[WorkflowControl] = None
     autonomous_stop: Optional[AutonomousStop] = None
 
+    # Control-plane lifecycle and traceability. These fields are deliberately
+    # separate from the LLM-produced workflow outputs above.
+    run_id: str = Field(default_factory=lambda: str(uuid4()))
+    ticket_id: Optional[str] = None
+    current_stage: Optional[str] = None
+    policy_version: str = "v1"
+    terminal_outcome: Optional[TerminalOutcome] = None
+    gate_history: list[GateDecisionRecord] = Field(default_factory=list)
+    policy_decisions: list[PolicyDecision] = Field(default_factory=list)
+    authorizations: list[AuthorizationGrant] = Field(default_factory=list)
+    operation_receipts: list[ExternalOperationReceipt] = Field(default_factory=list)
+    pending_human_review: Optional[HumanReviewTask] = None
+    human_review_history: list[HumanReviewDecision] = Field(default_factory=list)
+
     last_gate_decision: Optional["GateDecision"] = Field(default=None)
     terminal_status: Optional[TerminalStatus] = None
     autonomous_best_effort: bool = False
@@ -129,6 +165,123 @@ class GateDecision(BaseModel):
     required_actions: list[str] = Field(default_factory=list)
     evidence_keys: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+def append_gate_history(
+    state: MutableMapping[str, Any],
+    decision: GateDecision,
+    *,
+    policy_version: str = "v1",
+) -> GateDecisionRecord:
+    """Append a deterministic gate decision to the run audit trail.
+
+    Orchestration nodes should call this alongside updating
+    ``last_gate_decision``. The list is append-only by workflow convention;
+    later phases will persist it as an immutable event stream.
+    """
+    record = GateDecisionRecord(
+        gate=decision.gate,
+        route=decision.route,
+        reason=decision.reason,
+        blocking_reasons=decision.blocking_reasons,
+        required_actions=decision.required_actions,
+        evidence_keys=decision.evidence_keys,
+        warnings=decision.warnings,
+        policy_version=policy_version,
+    )
+    history = state.get("gate_history") or []
+    history.append(record.model_dump())
+    state["gate_history"] = history
+    return record
+
+
+def append_policy_decision(
+    state: MutableMapping[str, Any],
+    decision: PolicyDecision,
+) -> PolicyDecision:
+    """Record a policy result before any future executor can consume it."""
+    decisions = state.get("policy_decisions") or []
+    decisions.append(decision.model_dump())
+    state["policy_decisions"] = decisions
+    return decision
+
+
+def issue_authorization(
+    state: MutableMapping[str, Any],
+    *,
+    scope: Literal[
+        "INVESTIGATION",
+        "IMPLEMENTATION",
+        "PUBLISH",
+        "PRODUCTION",
+        "CUSTOMER_RESPONSE",
+        "CLOSE_TICKET",
+    ],
+    decision: PolicyDecision,
+    gate_decision_id: str | None = None,
+) -> AuthorizationGrant:
+    """Issue a scoped grant only after a deterministic ALLOW decision."""
+    if decision.disposition != "ALLOW":
+        raise ValueError("Only ALLOW policy decisions may issue authorizations.")
+    grant = AuthorizationGrant(
+        run_id=state.get("run_id"),
+        scope=scope,
+        policy_version=decision.policy_version,
+        gate_decision_id=gate_decision_id,
+        evidence_keys=decision.evidence_keys,
+    )
+    authorizations = state.get("authorizations") or []
+    authorizations.append(grant.model_dump())
+    state["authorizations"] = authorizations
+    return grant
+
+
+def append_operation_receipts(
+    state: MutableMapping[str, Any],
+    receipts: list[ExternalOperationReceipt],
+) -> None:
+    """Persist verified external-operation evidence in workflow state."""
+    existing = state.get("operation_receipts") or []
+    existing.extend(receipt.model_dump() for receipt in receipts)
+    state["operation_receipts"] = existing
+
+
+def issue_human_authorization(
+    state: MutableMapping[str, Any],
+    *,
+    scope: Literal[
+        "INVESTIGATION",
+        "IMPLEMENTATION",
+        "PUBLISH",
+        "PRODUCTION",
+        "CUSTOMER_RESPONSE",
+        "CLOSE_TICKET",
+    ],
+    approval_id: str,
+    expires_at: Any = None,
+) -> AuthorizationGrant:
+    """Record a human-scoped grant; this does not bypass deterministic gates."""
+    if isinstance(state, MutableMapping):
+        run_id = state.get("run_id")
+        policy_version = state.get("policy_version", "v1")
+        authorizations = state.get("authorizations") or []
+    else:
+        run_id = getattr(state, "run_id", None)
+        policy_version = getattr(state, "policy_version", "v1")
+        authorizations = getattr(state, "authorizations", []) or []
+    grant = AuthorizationGrant(
+        run_id=run_id,
+        scope=scope,
+        human_approval_id=approval_id,
+        expires_at=expires_at,
+        policy_version=policy_version,
+    )
+    authorizations.append(grant)
+    if isinstance(state, MutableMapping):
+        state["authorizations"] = authorizations
+    else:
+        state.authorizations = authorizations
+    return grant
 
 
 # Resolve forward references used by SupportMasterState.

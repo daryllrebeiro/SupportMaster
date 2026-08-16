@@ -1,0 +1,3 @@
+09:10 on-call: API 502 rate rising after v4.8.0 rollout.
+09:18 database team: database is healthy; application pool is exhausted.
+09:26 release team: rollback is not authorized yet; investigate cancellation path.

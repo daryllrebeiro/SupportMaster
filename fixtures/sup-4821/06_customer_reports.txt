@@ -1,0 +1,3 @@
+Three customers report intermittent 502 or 504 responses from report exports
+after the v4.8.0 deployment. Restarting the affected pod temporarily restores
+service. The issue affects approximately 18 percent of active tenants.

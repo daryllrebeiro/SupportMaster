@@ -1,0 +1,10 @@
+{
+  "service": "api",
+  "environment": "production",
+  "version": "v4.8.0",
+  "alerts": [
+    {"name": "HikariPoolExhausted", "severity": "critical"},
+    {"name": "DatabaseHealthy", "severity": "info"},
+    {"name": "PodRestartTemporarilyRecovers", "severity": "warning"}
+  ]
+}

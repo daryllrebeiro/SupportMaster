@@ -1,0 +1,4 @@
+timestamp,version,error_rate,hikari_pending,app_memory_mb,db_health
+2026-08-15T09:00:00Z,v4.8.0,0.18,143,6144,healthy
+2026-08-15T09:05:00Z,v4.8.0,0.21,188,7168,healthy
+2026-08-15T08:55:00Z,v4.7.9,0.00,0,4096,healthy

@@ -11,7 +11,6 @@ from ..agents.code_change_agent import code_change_agent
 from ..agents.customer_response_agent import customer_response_agent
 from ..agents.duplicate_work_agent import duplicate_work_agent
 from ..agents.evidence_agent import evidence_agent
-from ..agents.github_publish_agent import github_publish_agent
 from ..agents.implementation_agent import implementation_agent
 from ..agents.investigation_agent import investigation_agent
 from ..agents.publish_agent import publish_agent
@@ -26,14 +25,28 @@ from ..agents.validation_agent import validation_agent
 from ..agents.workflow_control_agent import workflow_control_agent
 from ..agents.workflow_summary_agent import workflow_summary_agent
 from ..config import select_model
+from ..execution import (
+    PublicationExecutionResult,
+    PublicationExecutor,
+    build_github_publish_result,
+    persist_publication_receipts,
+)
+from ..models.control import ExternalOperationReceipt
 from ..control_gates import (
     evaluate_audit_gate,
     evaluate_duplicate_gate,
+    evaluate_implementation_authorization_gate,
     harden_root_cause_analysis,
+    evaluate_publish_authorization_gate,
     evaluate_review_gate,
     evaluate_validation_gate,
 )
-from ..workflow_state import SupportMasterState
+from ..workflow_state import (
+    SupportMasterState,
+    append_gate_history,
+    append_policy_decision,
+    issue_authorization,
+)
 from .terminal_nodes import autonomous_safety_stop
 
 
@@ -47,6 +60,7 @@ def _clone_agent(agent: Agent, model_name: str) -> Agent:
 def duplicate_work_gate(ctx: Context) -> dict:
     decision = evaluate_duplicate_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
+    append_gate_history(ctx.state, decision)
     if "DUPLICATE_CHECK_INCOMPLETE" in decision.warnings:
         ctx.state["autonomous_best_effort"] = True
         ctx.state["uncertainty_flags"] = ["DUPLICATE_CHECK_INCOMPLETE"]
@@ -58,8 +72,29 @@ def duplicate_work_gate(ctx: Context) -> dict:
 def implementation_review_gate(ctx: Context) -> dict:
     decision = evaluate_review_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
+    append_gate_history(ctx.state, decision)
     ctx.route = decision.route
     return decision.model_dump()
+
+
+@node(name="implementation_authorization_gate")
+def implementation_authorization_gate(ctx: Context) -> dict:
+    """Issue an implementation grant only after deterministic authorization."""
+    policy, decision = evaluate_implementation_authorization_gate(
+        ctx.state.to_dict()
+    )
+    append_policy_decision(ctx.state, policy)
+    record = append_gate_history(ctx.state, decision)
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    if policy.disposition == "ALLOW":
+        issue_authorization(
+            ctx.state,
+            scope="IMPLEMENTATION",
+            decision=policy,
+            gate_decision_id=record.decision_id,
+        )
+    ctx.route = decision.route
+    return {"policy": policy.model_dump(), "gate": decision.model_dump()}
 
 
 @node(name="root_cause_confidence_check")
@@ -89,8 +124,80 @@ def root_cause_confidence_check(ctx: Context) -> dict:
 def validation_testing_gate(ctx: Context) -> dict:
     decision = evaluate_validation_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
+    append_gate_history(ctx.state, decision)
     ctx.route = decision.route
     return decision.model_dump()
+
+
+@node(name="publish_authorization_gate")
+def publish_authorization_gate(ctx: Context) -> dict:
+    """Issue a publish grant immediately before Git/GitHub mutation."""
+    policy, decision = evaluate_publish_authorization_gate(ctx.state.to_dict())
+    append_policy_decision(ctx.state, policy)
+    record = append_gate_history(ctx.state, decision)
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    if policy.disposition == "ALLOW":
+        issue_authorization(
+            ctx.state,
+            scope="PUBLISH",
+            decision=policy,
+            gate_decision_id=record.decision_id,
+        )
+    ctx.route = decision.route
+    return {"policy": policy.model_dump(), "gate": decision.model_dump()}
+
+
+def _build_verified_publication_executor(
+    executor: PublicationExecutor | None,
+):
+    """Create the deterministic publication node for one workflow instance."""
+
+    @node(name="verified_publication_executor")
+    def verified_publication_executor(ctx: Context) -> dict:
+        state = ctx.state.to_dict()
+        plan = state.get("publish_plan")
+        repository_path = state.get("repository_path")
+        if executor is None:
+            blocked_receipt = ExternalOperationReceipt(
+                operation_type="PUBLICATION_EXECUTOR",
+                requested_action="execute_verified_publication",
+                status="BLOCKED",
+                error="No repository/GitHub execution adapters were configured.",
+            )
+            result = PublicationExecutionResult(
+                status="BLOCKED",
+                receipts=[blocked_receipt],
+                errors=[blocked_receipt.error or "Execution adapters unavailable."],
+            )
+        elif plan is None or not repository_path:
+            blocked_receipt = ExternalOperationReceipt(
+                operation_type="PUBLICATION_EXECUTOR",
+                requested_action="execute_verified_publication",
+                status="BLOCKED",
+                error="A publish plan and local repository path are required.",
+            )
+            result = PublicationExecutionResult(
+                status="BLOCKED",
+                receipts=[blocked_receipt],
+                errors=[blocked_receipt.error or "Publication inputs unavailable."],
+            )
+        else:
+            result = executor.execute(
+                state,
+                repository_path=repository_path,
+                plan=plan,
+            )
+        persist_publication_receipts(ctx.state, result)
+        if plan is not None and result.status in {"PUBLISHED", "PARTIALLY_PUBLISHED"}:
+            ctx.state["github_publish_result"] = build_github_publish_result(
+                plan,
+                result,
+                state,
+            ).model_dump()
+        ctx.route = "CONTINUE" if result.status in {"PUBLISHED", "PARTIALLY_PUBLISHED"} else "SAFETY_STOP"
+        return result.model_dump()
+
+    return verified_publication_executor
 
 
 @node(name="final_audit_gate")
@@ -100,12 +207,17 @@ def final_audit_gate(ctx: Context) -> dict:
     ctx.state["terminal_status"] = (
         "COMPLETED" if decision.route == "COMPLETED" else "SAFETY_STOP"
     )
+    ctx.state["terminal_outcome"] = (
+        "COMPLETED" if decision.route == "COMPLETED" else "SAFETY_STOP"
+    )
+    append_gate_history(ctx.state, decision)
     ctx.route = decision.route
     return decision.model_dump()
 
 
 def create_publishing_gate_workflow(
     model_name: str | None = None,
+    publication_executor: PublicationExecutor | None = None,
 ) -> Workflow:
     """Create the complete gated graph through final audit routing."""
     selected_model = select_model(model_name)
@@ -122,18 +234,21 @@ def create_publishing_gate_workflow(
     validation = _clone_agent(validation_agent, selected_model)
     test_result = _clone_agent(test_result_agent, selected_model)
     publish = _clone_agent(publish_agent, selected_model)
-    github_publish = _clone_agent(github_publish_agent, selected_model)
     resolution = _clone_agent(resolution_agent, selected_model)
     customer_response = _clone_agent(customer_response_agent, selected_model)
     audit = _clone_agent(audit_agent, selected_model)
     workflow_summary = _clone_agent(workflow_summary_agent, selected_model)
     workflow_control = _clone_agent(workflow_control_agent, selected_model)
+    verified_publication_executor = _build_verified_publication_executor(
+        publication_executor
+    )
 
     return Workflow(
         name="supportmaster_publishing_gate",
         description=(
             "SupportMaster's complete conditional workflow with duplicate, "
-            "review, validation, publishing, and final audit gates."
+            "review, implementation, validation, publish-authorization, "
+            "and final audit gates."
         ),
         state_schema=SupportMasterState,
         edges=[
@@ -157,6 +272,13 @@ def create_publishing_gate_workflow(
                 review,
                 implementation_review_gate,
                 {
+                    "READY_FOR_IMPLEMENTATION": implementation_authorization_gate,
+                    "SAFETY_STOP": autonomous_safety_stop,
+                },
+            ),
+            (
+                implementation_authorization_gate,
+                {
                     "READY_FOR_IMPLEMENTATION": code_change,
                     "SAFETY_STOP": autonomous_safety_stop,
                 },
@@ -174,7 +296,23 @@ def create_publishing_gate_workflow(
             ),
             (
                 publish,
-                github_publish,
+                publish_authorization_gate,
+            ),
+            (
+                publish_authorization_gate,
+                {
+                    "READY_FOR_PUBLISH": verified_publication_executor,
+                    "SAFETY_STOP": autonomous_safety_stop,
+                },
+            ),
+            (
+                verified_publication_executor,
+                {
+                    "CONTINUE": resolution,
+                    "SAFETY_STOP": autonomous_safety_stop,
+                },
+            ),
+            (
                 resolution,
                 customer_response,
                 audit,

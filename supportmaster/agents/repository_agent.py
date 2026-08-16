@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.repository import RepositoryAnalysis
 
 
 repository_agent = Agent(
     name="repository_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Identifies the repository, service, module, and candidate "
         "source-code locations relevant to a support-ticket investigation."

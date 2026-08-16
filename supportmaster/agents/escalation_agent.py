@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.escalation import EscalationAnalysis
 
 
 escalation_agent = Agent(
     name="escalation_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Acts as a controlled-autonomy decision gate that determines "
         "whether the SupportMaster workflow may continue autonomously, "

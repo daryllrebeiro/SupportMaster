@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.github_publish import GitHubPublishResult
 
 
 github_publish_agent = Agent(
     name="github_publish_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Executes an approved SupportMaster publication plan by safely "
         "committing only approved changes, pushing the working branch, "

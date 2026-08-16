@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.publish import PublishPlan
 
 
 publish_agent = Agent(
     name="publish_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Determines whether a validated SupportMaster implementation is "
         "safe to publish and prepares a traceable commit and pull-request "

@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.review import ReviewAnalysis
 
 
 review_agent = Agent(
     name="review_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Performs the final evidence-based engineering review of a "
         "SupportMaster investigation, implementation, and validation "

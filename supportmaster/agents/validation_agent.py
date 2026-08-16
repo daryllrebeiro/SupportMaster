@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.validation import ValidationAnalysis
 
 
 validation_agent = Agent(
     name="validation_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Validates an implemented remediation against the original "
         "support issue, established root cause, remediation plan, "

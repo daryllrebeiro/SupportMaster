@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.remediation import RemediationPlan
 
 
 remediation_agent = Agent(
     name="remediation_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Creates a safe, evidence-based high-level remediation plan from "
         "the established root cause without directly modifying source code."

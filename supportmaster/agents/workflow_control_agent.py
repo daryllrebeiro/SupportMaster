@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.workflow_control import WorkflowControl
 
 
 workflow_control_agent = Agent(
     name="workflow_control_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Acts as the SupportMaster workflow control plane. Evaluates "
         "workflow state, safety gates, evidence, duplicate-work results, "

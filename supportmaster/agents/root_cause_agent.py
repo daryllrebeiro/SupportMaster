@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.root_cause import RootCauseAnalysis
 
 
 root_cause_agent = Agent(
     name="root_cause_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Synthesizes ticket analysis, investigation findings, repository "
         "information, duplicate-work results, and technical evidence to "

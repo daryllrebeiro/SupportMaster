@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.code_change import CodeChangeResult
 
 
 code_change_agent = Agent(
     name="code_change_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Implements an approved SupportMaster remediation plan by "
         "inspecting the repository, making focused source-code changes, "

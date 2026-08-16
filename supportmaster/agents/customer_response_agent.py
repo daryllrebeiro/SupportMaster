@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.customer_response import CustomerResponse
 
 
 customer_response_agent = Agent(
     name="customer_response_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Generates an evidence-based, customer-facing support response "
         "from the verified SupportMaster resolution outcome without "

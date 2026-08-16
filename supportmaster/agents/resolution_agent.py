@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.resolution import ResolutionAnalysis
 
 
 resolution_agent = Agent(
     name="resolution_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Performs the final evidence-based assessment of a SupportMaster "
         "support issue by correlating the original customer problem, "

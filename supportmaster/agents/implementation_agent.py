@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.implementation import ImplementationResult
 
 
 implementation_agent = Agent(
     name="implementation_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Implements an approved remediation plan in the identified "
         "repository while respecting root-cause, duplicate-work, and "

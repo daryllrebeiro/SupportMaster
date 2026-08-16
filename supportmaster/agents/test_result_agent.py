@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.test_result import TestResult
 
 
 test_result_agent = Agent(
     name="test_result_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Performs post-implementation testing and verification of "
         "SupportMaster changes, including regression, reproduction, "

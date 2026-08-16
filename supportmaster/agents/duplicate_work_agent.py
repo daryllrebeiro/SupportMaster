@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.duplicate_work import DuplicateWorkAnalysis
 
 
 duplicate_work_agent = Agent(
     name="duplicate_work_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Determines whether existing engineering work already addresses "
         "the current support issue by searching connected engineering "

@@ -1,12 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.ticket import TicketAnalysis
 
 
 ticket_analysis_agent = Agent(
     name="ticket_analysis_agent",
-    model="gemini-2.5-flash",
-
+    model=MODEL_NAME,
     description=(
         "Analyzes a customer-support bug report and converts it into a "
         "structured technical ticket analysis containing symptoms, "

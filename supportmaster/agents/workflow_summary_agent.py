@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.workflow_summary import WorkflowSummary
 
 
 workflow_summary_agent = Agent(
     name="workflow_summary_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Produces the final structured SupportMaster workflow summary by "
         "consolidating verified investigation, implementation, validation, "

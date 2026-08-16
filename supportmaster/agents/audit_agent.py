@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.audit import WorkflowAudit
 
 
 audit_agent = Agent(
     name="audit_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Performs the final evidence, safety, consistency, traceability, "
         "and customer-communication audit across the complete SupportMaster "

@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.evidence import EvidenceAnalysis
 
 
 evidence_agent = Agent(
     name="evidence_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Collects, evaluates, classifies, and sanitizes technical evidence "
         "relevant to a customer-support investigation while identifying "

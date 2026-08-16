@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 
+from ..config import MODEL_NAME
 from ..models.investigation import InvestigationPlan
 
 
 investigation_agent = Agent(
     name="investigation_agent",
-    model="gemini-2.5-flash",
+    model=MODEL_NAME,
     description=(
         "Analyzes structured support-ticket information, evaluates technical "
         "signals, develops evidence-based root-cause hypotheses, identifies "

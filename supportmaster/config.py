@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 
 from dotenv import load_dotenv
 
@@ -6,7 +7,52 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-MODEL_NAME = os.getenv(
+DEFAULT_MODEL = os.getenv(
     "SUPPORTMASTER_MODEL",
     "gemini-2.5-flash",
 )
+
+# Backwards-compatible name used by the existing, default workflow instance.
+MODEL_NAME = DEFAULT_MODEL
+
+# These models support the text, tool-calling, and structured-output workflow
+# SupportMaster requires. Deployments can replace this catalog without a code
+# change when their Gemini account exposes a different approved set.
+_DEFAULT_SUPPORTED_MODELS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+)
+
+
+def supported_models() -> tuple[str, ...]:
+    """Return the models the application may present in its picker.
+
+    ``SUPPORTMASTER_MODELS`` is a comma-separated allow-list. The configured
+    default is always included so an existing deployment remains runnable when
+    it uses an organization-specific Gemini model name.
+    """
+    configured_models = os.getenv("SUPPORTMASTER_MODELS", "")
+    models: Sequence[str] = (
+        tuple(model.strip() for model in configured_models.split(",") if model.strip())
+        if configured_models
+        else _DEFAULT_SUPPORTED_MODELS
+    )
+    return tuple(dict.fromkeys((*models, DEFAULT_MODEL)))
+
+
+def select_model(model_name: str | None = None) -> str:
+    """Validate and return the model selected for one workflow execution."""
+    selected_model = (model_name or DEFAULT_MODEL).strip()
+    if not selected_model:
+        raise ValueError("A SupportMaster model must be selected.")
+
+    if selected_model not in supported_models():
+        choices = ", ".join(supported_models())
+        raise ValueError(
+            f"Unsupported SupportMaster model: {selected_model!r}. "
+            f"Choose one of: {choices}."
+        )
+    return selected_model

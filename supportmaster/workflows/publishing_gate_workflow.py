@@ -1,0 +1,161 @@
+"""ADK Workflow branch with validation, publishing, and audit gates."""
+
+from __future__ import annotations
+
+from google.adk.agents import Agent
+from google.adk.agents.context import Context
+from google.adk.workflow import START, Workflow, node
+
+from ..agents.audit_agent import audit_agent
+from ..agents.code_change_agent import code_change_agent
+from ..agents.customer_response_agent import customer_response_agent
+from ..agents.duplicate_work_agent import duplicate_work_agent
+from ..agents.escalation_agent import escalation_agent
+from ..agents.evidence_agent import evidence_agent
+from ..agents.github_publish_agent import github_publish_agent
+from ..agents.implementation_agent import implementation_agent
+from ..agents.investigation_agent import investigation_agent
+from ..agents.publish_agent import publish_agent
+from ..agents.remediation_agent import remediation_agent
+from ..agents.repository_agent import repository_agent
+from ..agents.resolution_agent import resolution_agent
+from ..agents.review_agent import review_agent
+from ..agents.root_cause_agent import root_cause_agent
+from ..agents.test_result_agent import test_result_agent
+from ..agents.ticket_agent import ticket_analysis_agent
+from ..agents.validation_agent import validation_agent
+from ..agents.workflow_control_agent import workflow_control_agent
+from ..agents.workflow_summary_agent import workflow_summary_agent
+from ..config import select_model
+from ..control_gates import (
+    evaluate_audit_gate,
+    evaluate_duplicate_gate,
+    evaluate_review_gate,
+    evaluate_validation_gate,
+)
+
+
+def _clone_agent(agent: Agent, model_name: str) -> Agent:
+    cloned = agent.clone(update={"model": model_name})
+    cloned.parent_agent = None
+    return cloned
+
+
+@node(name="duplicate_work_gate")
+def duplicate_work_gate(ctx: Context) -> dict:
+    decision = evaluate_duplicate_gate(ctx.state.to_dict())
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    ctx.route = decision.route
+    return decision.model_dump()
+
+
+@node(name="implementation_review_gate")
+def implementation_review_gate(ctx: Context) -> dict:
+    decision = evaluate_review_gate(ctx.state.to_dict())
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    ctx.route = decision.route
+    return decision.model_dump()
+
+
+@node(name="validation_testing_gate")
+def validation_testing_gate(ctx: Context) -> dict:
+    decision = evaluate_validation_gate(ctx.state.to_dict())
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    ctx.route = decision.route
+    return decision.model_dump()
+
+
+@node(name="final_audit_gate")
+def final_audit_gate(ctx: Context) -> dict:
+    decision = evaluate_audit_gate(ctx.state.to_dict())
+    ctx.state["last_gate_decision"] = decision.model_dump()
+    ctx.state["terminal_status"] = (
+        "COMPLETED" if decision.route == "COMPLETED" else "HUMAN_REVIEW_REQUIRED"
+    )
+    ctx.route = decision.route
+    return decision.model_dump()
+
+
+def create_publishing_gate_workflow(
+    model_name: str | None = None,
+) -> Workflow:
+    """Create the complete gated graph through final audit routing."""
+    selected_model = select_model(model_name)
+    ticket = _clone_agent(ticket_analysis_agent, selected_model)
+    investigation = _clone_agent(investigation_agent, selected_model)
+    duplicate = _clone_agent(duplicate_work_agent, selected_model)
+    evidence = _clone_agent(evidence_agent, selected_model)
+    repository = _clone_agent(repository_agent, selected_model)
+    root_cause = _clone_agent(root_cause_agent, selected_model)
+    remediation = _clone_agent(remediation_agent, selected_model)
+    review = _clone_agent(review_agent, selected_model)
+    code_change = _clone_agent(code_change_agent, selected_model)
+    implementation = _clone_agent(implementation_agent, selected_model)
+    validation = _clone_agent(validation_agent, selected_model)
+    test_result = _clone_agent(test_result_agent, selected_model)
+    publish = _clone_agent(publish_agent, selected_model)
+    github_publish = _clone_agent(github_publish_agent, selected_model)
+    resolution = _clone_agent(resolution_agent, selected_model)
+    customer_response = _clone_agent(customer_response_agent, selected_model)
+    audit = _clone_agent(audit_agent, selected_model)
+    escalation = _clone_agent(escalation_agent, selected_model)
+    workflow_summary = _clone_agent(workflow_summary_agent, selected_model)
+    workflow_control = _clone_agent(workflow_control_agent, selected_model)
+
+    return Workflow(
+        name="supportmaster_publishing_gate",
+        description=(
+            "SupportMaster's complete conditional workflow with duplicate, "
+            "review, validation, publishing, and final audit gates."
+        ),
+        edges=[
+            (
+                START,
+                ticket,
+                investigation,
+                duplicate,
+                duplicate_work_gate,
+                {
+                    "CONTINUE": evidence,
+                    "HUMAN_REVIEW_REQUIRED": escalation,
+                },
+            ),
+            (
+                evidence,
+                repository,
+                root_cause,
+                remediation,
+                review,
+                implementation_review_gate,
+                {
+                    "READY_FOR_IMPLEMENTATION": code_change,
+                    "HUMAN_REVIEW_REQUIRED": escalation,
+                },
+            ),
+            (
+                code_change,
+                implementation,
+                validation,
+                test_result,
+                validation_testing_gate,
+                {
+                    "READY_FOR_PUBLISH": publish,
+                    "HUMAN_REVIEW_REQUIRED": escalation,
+                },
+            ),
+            (
+                publish,
+                github_publish,
+                resolution,
+                customer_response,
+                audit,
+                final_audit_gate,
+                {
+                    "COMPLETED": workflow_summary,
+                    "HUMAN_REVIEW_REQUIRED": escalation,
+                },
+            ),
+            (escalation, workflow_summary),
+            (workflow_summary, workflow_control),
+        ],
+    )

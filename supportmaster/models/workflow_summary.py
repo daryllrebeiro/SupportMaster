@@ -7,6 +7,7 @@ WorkflowStatus = Literal[
     "COMPLETED",
     "BLOCKED",
     "REQUIRES_HUMAN_REVIEW",
+    "SAFETY_STOP",
     "FAILED",
 ]
 

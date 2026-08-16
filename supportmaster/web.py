@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -222,4 +223,8 @@ def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
 
 
 if __name__ == "__main__":
-    run_server()
+    parser = argparse.ArgumentParser(description="SupportMaster model-picker UI")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8001)
+    args = parser.parse_args()
+    run_server(args.host, args.port)

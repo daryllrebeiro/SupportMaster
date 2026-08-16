@@ -167,9 +167,12 @@ If:
 
 INSUFFICIENT_EVIDENCE
 
-determine whether duplicate verification is required before proceeding.
+and `autonomous_best_effort` is true, continue evaluating the review while
+recording the unresolved duplicate-work uncertainty as a warning. Do not block
+solely because the external duplicate search was unavailable.
 
-Do not ignore an unresolved duplicate-work concern.
+If `autonomous_best_effort` is not true, treat the unresolved duplicate-work
+concern as blocking.
 
 --------------------------------------------------
 

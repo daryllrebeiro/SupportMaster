@@ -16,11 +16,11 @@ class ImplementationGateWorkflowTests(unittest.TestCase):
             "implementation_review_gate", "READY_FOR_IMPLEMENTATION"
         )
         next_on_block = graph.get_next_pending_nodes(
-            "implementation_review_gate", "HUMAN_REVIEW_REQUIRED"
+            "implementation_review_gate", "SAFETY_STOP"
         )
 
         self.assertEqual(next_on_approval, ["code_change_agent"])
-        self.assertEqual(next_on_block, ["escalation_agent"])
+        self.assertEqual(next_on_block, ["autonomous_safety_stop"])
 
     def test_workflow_contains_implementation_after_code_change_plan(self) -> None:
         workflow = create_implementation_gate_workflow()

@@ -17,10 +17,10 @@ class EndToEndSafetyScenarioTests(unittest.TestCase):
             {"duplicate_work_analysis": {"duplicate_status": "DUPLICATE_FOUND"}}
         )
 
-        self.assertEqual(decision.route, "HUMAN_REVIEW_REQUIRED")
+        self.assertEqual(decision.route, "SAFETY_STOP")
         self.assertIn("NO_VERIFIED_DUPLICATE_CHECK", decision.blocking_reasons)
 
-    def test_duplicate_verification_incomplete_is_not_clean(self) -> None:
+    def test_duplicate_verification_incomplete_continues_best_effort(self) -> None:
         decision = evaluate_duplicate_gate(
             {
                 "duplicate_work_analysis": {
@@ -29,7 +29,8 @@ class EndToEndSafetyScenarioTests(unittest.TestCase):
             }
         )
 
-        self.assertNotEqual(decision.route, "CONTINUE")
+        self.assertEqual(decision.route, "CONTINUE")
+        self.assertIn("DUPLICATE_CHECK_INCOMPLETE", decision.warnings)
 
     def test_rejected_review_cannot_reach_implementation(self) -> None:
         decision = evaluate_review_gate(
@@ -41,7 +42,7 @@ class EndToEndSafetyScenarioTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(decision.route, "HUMAN_REVIEW_REQUIRED")
+        self.assertEqual(decision.route, "SAFETY_STOP")
 
     def test_failed_validation_cannot_reach_publish(self) -> None:
         decision = evaluate_validation_gate(
@@ -51,7 +52,7 @@ class EndToEndSafetyScenarioTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(decision.route, "HUMAN_REVIEW_REQUIRED")
+        self.assertEqual(decision.route, "SAFETY_STOP")
         self.assertNotEqual(decision.route, "READY_FOR_PUBLISH")
 
     def test_tests_not_run_cannot_reach_publish(self) -> None:
@@ -62,14 +63,14 @@ class EndToEndSafetyScenarioTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(decision.route, "HUMAN_REVIEW_REQUIRED")
+        self.assertEqual(decision.route, "SAFETY_STOP")
 
     def test_blocked_audit_cannot_reach_completed(self) -> None:
         decision = evaluate_audit_gate(
             {"workflow_audit": {"audit_status": "BLOCKED"}}
         )
 
-        self.assertEqual(decision.route, "HUMAN_REVIEW_REQUIRED")
+        self.assertEqual(decision.route, "SAFETY_STOP")
         self.assertNotEqual(decision.route, "COMPLETED")
 
     def test_full_workflow_exposes_all_enforcement_gates(self) -> None:

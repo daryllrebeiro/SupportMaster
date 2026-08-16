@@ -8,6 +8,7 @@ WorkflowDecision = Literal[
     "STOP",
     "REQUEST_INFORMATION",
     "HUMAN_REVIEW_REQUIRED",
+    "SAFETY_STOP",
     "READY_FOR_IMPLEMENTATION",
     "READY_FOR_PUBLISH",
 ]

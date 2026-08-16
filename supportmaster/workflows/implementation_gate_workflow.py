@@ -8,7 +8,6 @@ from google.adk.workflow import START, Workflow, node
 
 from ..agents.code_change_agent import code_change_agent
 from ..agents.duplicate_work_agent import duplicate_work_agent
-from ..agents.escalation_agent import escalation_agent
 from ..agents.evidence_agent import evidence_agent
 from ..agents.implementation_agent import implementation_agent
 from ..agents.investigation_agent import investigation_agent
@@ -19,6 +18,7 @@ from ..agents.root_cause_agent import root_cause_agent
 from ..agents.ticket_agent import ticket_analysis_agent
 from ..config import select_model
 from ..control_gates import evaluate_duplicate_gate, evaluate_review_gate
+from .terminal_nodes import autonomous_safety_stop
 
 
 def _clone_agent(agent: Agent, model_name: str) -> Agent:
@@ -31,6 +31,9 @@ def _clone_agent(agent: Agent, model_name: str) -> Agent:
 def duplicate_work_gate(ctx: Context) -> dict:
     decision = evaluate_duplicate_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
+    if "DUPLICATE_CHECK_INCOMPLETE" in decision.warnings:
+        ctx.state["autonomous_best_effort"] = True
+        ctx.state["uncertainty_flags"] = ["DUPLICATE_CHECK_INCOMPLETE"]
     ctx.route = decision.route
     return decision.model_dump()
 
@@ -58,7 +61,6 @@ def create_implementation_gate_workflow(
     review = _clone_agent(review_agent, selected_model)
     code_change = _clone_agent(code_change_agent, selected_model)
     implementation = _clone_agent(implementation_agent, selected_model)
-    escalation = _clone_agent(escalation_agent, selected_model)
 
     return Workflow(
         name="supportmaster_implementation_gate",
@@ -75,7 +77,7 @@ def create_implementation_gate_workflow(
                 duplicate_work_gate,
                 {
                     "CONTINUE": evidence,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (
@@ -87,7 +89,7 @@ def create_implementation_gate_workflow(
                 implementation_review_gate,
                 {
                     "READY_FOR_IMPLEMENTATION": code_change,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (code_change, implementation),

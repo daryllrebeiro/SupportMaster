@@ -7,7 +7,7 @@ structured state instead of parsing agent prose.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +31,59 @@ from .models.ticket import TicketAnalysis
 from .models.validation import ValidationAnalysis
 from .models.workflow_control import WorkflowControl
 from .models.workflow_summary import WorkflowSummary
+
+
+GateName = Literal["DUPLICATE_WORK", "REVIEW", "VALIDATION", "AUDIT"]
+GateRoute = Literal[
+    "CONTINUE",
+    "STOP",
+    "REQUEST_INFORMATION",
+    # Retained for compatibility with older persisted events. New gates
+    # never emit this route; blocked automation terminates with SAFETY_STOP.
+    "HUMAN_REVIEW_REQUIRED",
+    "SAFETY_STOP",
+    "READY_FOR_IMPLEMENTATION",
+    "READY_FOR_PUBLISH",
+    "COMPLETED",
+]
+TerminalStatus = Literal["COMPLETED", "BLOCKED", "SAFETY_STOP", "HUMAN_REVIEW_REQUIRED"]
+
+
+class AutonomousStop(BaseModel):
+    """Machine-readable terminal result for a fail-closed autonomous run."""
+
+    status: Literal["SAFETY_STOP"] = "SAFETY_STOP"
+    gate: GateName
+    reason: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    required_actions: list[str] = Field(default_factory=list)
+    evidence_keys: list[str] = Field(default_factory=list)
+    autonomous_continuation_allowed: bool = False
+
+
+OUTPUT_KEY_TO_STATE_FIELD: dict[str, str] = {
+    "ticket_analysis": "ticket_analysis",
+    "investigation_plan": "investigation_plan",
+    "duplicate_work_analysis": "duplicate_work_analysis",
+    "evidence_analysis": "evidence_analysis",
+    "repository_analysis": "repository_analysis",
+    "root_cause_analysis": "root_cause_analysis",
+    "remediation_plan": "remediation_plan",
+    "review_analysis": "review_analysis",
+    "code_change_result": "code_change_result",
+    "implementation_result": "implementation_result",
+    "validation_analysis": "validation_analysis",
+    "test_result": "test_result",
+    "publish_plan": "publish_plan",
+    "github_publish_result": "github_publish_result",
+    "resolution_analysis": "resolution_analysis",
+    "customer_response": "customer_response",
+    "workflow_audit": "workflow_audit",
+    "escalation_analysis": "escalation_analysis",
+    "workflow_summary": "workflow_summary",
+    "workflow_control": "workflow_control",
+    "autonomous_stop": "autonomous_stop",
+}
 
 
 class SupportMasterState(BaseModel):
@@ -58,24 +111,12 @@ class SupportMasterState(BaseModel):
     escalation_analysis: Optional[EscalationAnalysis] = None
     workflow_summary: Optional[WorkflowSummary] = None
     workflow_control: Optional[WorkflowControl] = None
+    autonomous_stop: Optional[AutonomousStop] = None
 
     last_gate_decision: Optional["GateDecision"] = Field(default=None)
-    terminal_status: Optional["TerminalStatus"] = None
-
-
-from typing import Literal
-
-GateName = Literal["DUPLICATE_WORK", "REVIEW", "VALIDATION", "AUDIT"]
-GateRoute = Literal[
-    "CONTINUE",
-    "STOP",
-    "REQUEST_INFORMATION",
-    "HUMAN_REVIEW_REQUIRED",
-    "READY_FOR_IMPLEMENTATION",
-    "READY_FOR_PUBLISH",
-    "COMPLETED",
-]
-TerminalStatus = Literal["COMPLETED", "BLOCKED", "HUMAN_REVIEW_REQUIRED"]
+    terminal_status: Optional[TerminalStatus] = None
+    autonomous_best_effort: bool = False
+    uncertainty_flags: list[str] = Field(default_factory=list)
 
 
 class GateDecision(BaseModel):
@@ -87,6 +128,7 @@ class GateDecision(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
     required_actions: list[str] = Field(default_factory=list)
     evidence_keys: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 # Resolve forward references used by SupportMasterState.

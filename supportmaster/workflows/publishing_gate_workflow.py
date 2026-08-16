@@ -10,7 +10,6 @@ from ..agents.audit_agent import audit_agent
 from ..agents.code_change_agent import code_change_agent
 from ..agents.customer_response_agent import customer_response_agent
 from ..agents.duplicate_work_agent import duplicate_work_agent
-from ..agents.escalation_agent import escalation_agent
 from ..agents.evidence_agent import evidence_agent
 from ..agents.github_publish_agent import github_publish_agent
 from ..agents.implementation_agent import implementation_agent
@@ -30,9 +29,12 @@ from ..config import select_model
 from ..control_gates import (
     evaluate_audit_gate,
     evaluate_duplicate_gate,
+    harden_root_cause_analysis,
     evaluate_review_gate,
     evaluate_validation_gate,
 )
+from ..workflow_state import SupportMasterState
+from .terminal_nodes import autonomous_safety_stop
 
 
 def _clone_agent(agent: Agent, model_name: str) -> Agent:
@@ -45,6 +47,9 @@ def _clone_agent(agent: Agent, model_name: str) -> Agent:
 def duplicate_work_gate(ctx: Context) -> dict:
     decision = evaluate_duplicate_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
+    if "DUPLICATE_CHECK_INCOMPLETE" in decision.warnings:
+        ctx.state["autonomous_best_effort"] = True
+        ctx.state["uncertainty_flags"] = ["DUPLICATE_CHECK_INCOMPLETE"]
     ctx.route = decision.route
     return decision.model_dump()
 
@@ -55,6 +60,29 @@ def implementation_review_gate(ctx: Context) -> dict:
     ctx.state["last_gate_decision"] = decision.model_dump()
     ctx.route = decision.route
     return decision.model_dump()
+
+
+@node(name="root_cause_confidence_check")
+def root_cause_confidence_check(ctx: Context) -> dict:
+    """Normalize RCA confidence before remediation consumes it."""
+    analysis = ctx.state.get("root_cause_analysis")
+    repository = ctx.state.get("repository_analysis")
+    repository_available = (
+        bool(repository)
+        and (
+            repository.get("repository_identified")
+            if isinstance(repository, dict)
+            else getattr(repository, "repository_identified", False)
+        )
+    )
+    if analysis is not None:
+        normalized = harden_root_cause_analysis(
+            analysis,
+            repository_available=repository_available,
+        )
+        ctx.state["root_cause_analysis"] = normalized.model_dump()
+        return normalized.model_dump()
+    return {}
 
 
 @node(name="validation_testing_gate")
@@ -70,7 +98,7 @@ def final_audit_gate(ctx: Context) -> dict:
     decision = evaluate_audit_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
     ctx.state["terminal_status"] = (
-        "COMPLETED" if decision.route == "COMPLETED" else "HUMAN_REVIEW_REQUIRED"
+        "COMPLETED" if decision.route == "COMPLETED" else "SAFETY_STOP"
     )
     ctx.route = decision.route
     return decision.model_dump()
@@ -98,7 +126,6 @@ def create_publishing_gate_workflow(
     resolution = _clone_agent(resolution_agent, selected_model)
     customer_response = _clone_agent(customer_response_agent, selected_model)
     audit = _clone_agent(audit_agent, selected_model)
-    escalation = _clone_agent(escalation_agent, selected_model)
     workflow_summary = _clone_agent(workflow_summary_agent, selected_model)
     workflow_control = _clone_agent(workflow_control_agent, selected_model)
 
@@ -108,6 +135,7 @@ def create_publishing_gate_workflow(
             "SupportMaster's complete conditional workflow with duplicate, "
             "review, validation, publishing, and final audit gates."
         ),
+        state_schema=SupportMasterState,
         edges=[
             (
                 START,
@@ -117,19 +145,20 @@ def create_publishing_gate_workflow(
                 duplicate_work_gate,
                 {
                     "CONTINUE": evidence,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (
                 evidence,
                 repository,
                 root_cause,
+                root_cause_confidence_check,
                 remediation,
                 review,
                 implementation_review_gate,
                 {
                     "READY_FOR_IMPLEMENTATION": code_change,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (
@@ -140,7 +169,7 @@ def create_publishing_gate_workflow(
                 validation_testing_gate,
                 {
                     "READY_FOR_PUBLISH": publish,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
             (
@@ -152,10 +181,9 @@ def create_publishing_gate_workflow(
                 final_audit_gate,
                 {
                     "COMPLETED": workflow_summary,
-                    "HUMAN_REVIEW_REQUIRED": escalation,
+                    "SAFETY_STOP": autonomous_safety_stop,
                 },
             ),
-            (escalation, workflow_summary),
             (workflow_summary, workflow_control),
         ],
     )

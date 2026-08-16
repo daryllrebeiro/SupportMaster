@@ -20,9 +20,9 @@ class PublishingGateWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.graph.get_next_pending_nodes(
-                "validation_testing_gate", "HUMAN_REVIEW_REQUIRED"
+                "validation_testing_gate", "SAFETY_STOP"
             ),
-            ["escalation_agent"],
+            ["autonomous_safety_stop"],
         )
 
     def test_audit_must_approve_before_completion(self) -> None:
@@ -32,9 +32,9 @@ class PublishingGateWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.graph.get_next_pending_nodes(
-                "final_audit_gate", "HUMAN_REVIEW_REQUIRED"
+                "final_audit_gate", "SAFETY_STOP"
             ),
-            ["escalation_agent"],
+            ["autonomous_safety_stop"],
         )
 
     def test_validation_and_audit_nodes_are_in_the_graph(self) -> None:

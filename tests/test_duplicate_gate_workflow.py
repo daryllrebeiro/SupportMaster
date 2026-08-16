@@ -16,12 +16,12 @@ class DuplicateGateWorkflowTests(unittest.TestCase):
         next_on_continue = graph.get_next_pending_nodes(
             "duplicate_work_gate", "CONTINUE"
         )
-        next_on_review = graph.get_next_pending_nodes(
-            "duplicate_work_gate", "HUMAN_REVIEW_REQUIRED"
+        next_on_stop = graph.get_next_pending_nodes(
+            "duplicate_work_gate", "SAFETY_STOP"
         )
 
         self.assertEqual(next_on_continue, ["evidence_agent"])
-        self.assertEqual(next_on_review, ["escalation_agent"])
+        self.assertEqual(next_on_stop, ["autonomous_safety_stop"])
 
     def test_selected_model_is_applied_to_branch_agents(self) -> None:
         workflow = create_duplicate_gate_workflow("gemini-3.6-flash")

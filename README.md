@@ -116,9 +116,82 @@ runs. Case status actions are persisted and tenant-checked.
 Successful runs can reach completion autonomously;
 blocked runs terminate through `autonomous_safety_stop` with no human-review
 pause. The legacy always-on sequential workflow is no longer used by the
+
+Phase 19 adds an organization-neutral functional evaluation suite. Fixtures
+under `fixtures/cases/` are normalized and checked for canonical intake,
+tenant-preserving investigation, explicit evidence gaps, and fail-closed
+unverified resolution. New domains can add JSON fixtures without changing the
+workflow code; SUP-4821 remains only an optional regression scenario.
+
+Phase 20 adds configurable fixture expectations, onboarding acceptance, and
+deterministic end-to-end workflow simulations. A fixture may declare expected
+check outcomes under `evaluation.expectations`, while
+`OrganizationAcceptanceSuite` verifies safe organization defaults and runs the
+same functional scenarios under a newly configured tenant. The
+`EndToEndWorkflowSuite` exercises intake, tenant-scoped investigation, and the
+fail-closed resolution boundary without Gemini or external connectors.
+
+Phase 22 adds an operator-facing workspace projection. Case snapshots now
+include a workflow timeline, current stage, gate statuses, and a concrete next
+action so operators can understand blocked or incomplete work without reading
+raw workflow state.
+
+Phase 23 adds `ReadOnlyIntegrationBundle`, a small composition layer for issue
+tracker, monitoring, and CI reads. Every collected result remains paired with
+an integration receipt; the default policy permits safe reads while mutations
+remain blocked unless explicitly authorized.
+
+Phase 24 adds the deterministic pre-demo quality pack. It combines functional
+and end-to-end fixture suites, reports category/check coverage, and returns a
+non-zero exit code when any configured expectation or safety check fails.
+
+Phase 25 adds release-readiness checks for operation limits, authentication,
+read-only integration defaults, SQLite readiness, and the quality pack. Run
+`python -m supportmaster.release` before a deployment; use
+`--allow-anonymous` only for local demo environments.
+
+Phase 26 adds reproducible packaging and demo handoff. `Dockerfile`,
+`docker-compose.yml`, and `scripts/demo.ps1` provide a clean setup, while
+`docs/demo-runbook.md` documents the preflight, golden path, workspace, and
+container presentation flow.
+
+Phase 27 adds a tenant-scoped human-review queue projection. Operators can
+inspect open review tasks through `ReviewQueueService` or `GET /api/reviews`
+without exposing resume tokens or broadening approval scope.
+
+Phase 28 adds review-queue operational metrics through
+`ReviewQueueService.metrics` and `GET /api/reviews/metrics`, including status
+counts, approval/rejection totals, open work, and tasks expiring within 24
+hours. These metrics are observational only and do not alter workflow policy.
+
+Phase 29 adds a redacted, tenant-scoped case activity timeline. Operators can
+read `CaseWorkspaceService.activity` or
+`GET /api/cases/{case_id}/activity` to inspect event types and timing without
+exposing event payloads or secrets.
+
+Phase 30 brings that audit timeline into the workspace UI, showing recent
+durable activity alongside gate status and next action so the complete safety
+story is visible in one operator screen.
+
+Phase 31 adds the human-review queue summary to that same workspace, showing
+open approvals, expiring tasks, and review outcomes without exposing resume
+tokens or changing authorization behavior.
 runner or local UI.
 
 ## Verification
+
+Run the offline golden-path demo with:
+
+```powershell
+.\.venv\Scripts\python.exe -m supportmaster.demo reset
+.\.venv\Scripts\python.exe -m supportmaster.demo run
+.\.venv\Scripts\python.exe -m supportmaster.quality
+```
+
+The demo uses the seeded SaaS authentication fixture, persists a local demo
+organization, and prints the complete intake/investigation/resolution trace.
+It does not call Gemini or mutate external systems. Use `seed` to initialize
+the database without running the scenario.
 
 Run the deterministic unit and routing tests with:
 

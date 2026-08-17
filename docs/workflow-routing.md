@@ -140,6 +140,24 @@ escalation, and run artifacts used by the workflow, while status changes remain
 explicit operator actions and do not silently authorize implementation,
 publication, or closure.
 
+`FunctionalEvaluationSuite` runs the domain-neutral fixtures in
+`fixtures/cases/` without Gemini or external connectors. Each scenario is
+checked through intake, investigation, and resolution boundaries. A failed
+scenario reports its individual checks and error, making new organization or
+industry cases additive rather than tied to a single historical ticket.
+Onboarding uses `OrganizationAcceptanceSuite` to persist an active profile,
+verify that duplicate, approval, and production safeguards remain enabled, and
+execute the generic fixtures with the organization ID as tenant context.
+
+`EndToEndWorkflowSuite` runs each fixture through intake, investigation, and
+resolution as one trace, recording each stage and asserting that an unverified
+resolution cannot be sent or closed. This keeps onboarding and CI checks
+deterministic while still covering the workflow boundary end to end.
+
+The Phase 23 `ReadOnlyIntegrationBundle` composes issue, monitoring, and CI
+adapters for evidence collection. It performs no writes and returns one
+receipt for every attempted read, including blocked or failed operations.
+
 External systems are never called directly by an LLM. Issue tracking, CI,
 monitoring, notifications, and GitHub are reached through injected adapters
 and `IntegrationGateway`. Reads and mutations are separately permissioned,

@@ -137,3 +137,13 @@ Each record retains its source URI, capture time, classification, confidence,
 size, and redaction flags. `EvidenceIngestor.attach_to_state()` writes the
 bundle, records, and generated `EvidenceAnalysis` as plain dictionaries so the
 same provenance contract works in ADK state and durable run snapshots.
+
+Functional evaluation uses `EvaluationScenario`, `EvaluationResult`, and
+`EvaluationSuiteResult`. The deterministic suite validates source-neutral case
+normalization, tenant context, investigation gap reporting, and the invariant
+that unverified cases cannot produce send-ready resolution messages. Evaluation
+fixtures are independent of production run state and do not authorize actions.
+Scenario expectations are evaluated as additional named checks, so an
+organization can extend acceptance coverage without changing workflow code.
+`OrganizationAcceptanceResult` combines safe policy-default checks with the
+tenant-scoped functional suite and is suitable for onboarding gates or CI.

@@ -1,0 +1,8 @@
+.git
+.venv
+.env
+.supportmaster
+__pycache__
+*.pyc
+tests
+fixtures/sup-4821

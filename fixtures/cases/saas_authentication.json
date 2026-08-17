@@ -7,5 +7,12 @@
   "product": "Identity Gateway",
   "environment": "production",
   "steps": ["Open the application", "Choose SSO", "Complete identity-provider login", "Observe redirect"],
-  "impact": "New enterprise users cannot access the application."
+  "impact": "New enterprise users cannot access the application.",
+  "evaluation": {
+    "expectations": {
+      "canonical_case": "PASS",
+      "tenant_scoped_investigation": "PASS",
+      "unsafe_resolution_blocked": "PASS"
+    }
+  }
 }

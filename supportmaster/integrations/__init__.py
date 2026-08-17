@@ -8,6 +8,7 @@ from .adapters import (
 )
 from .http import JsonHttpTransport, UrllibJsonTransport
 from .github import PolicyGuardedGitHubAdapter
+from .bundle import IntegrationEvidenceBundle, ReadOnlyIntegrationBundle
 from .http_adapters import (
     HttpCIAdapter,
     HttpIssueTrackerAdapter,
@@ -46,6 +47,8 @@ __all__ = [
     "JsonHttpTransport",
     "MetricSample",
     "PolicyGuardedGitHubAdapter",
+    "IntegrationEvidenceBundle",
+    "ReadOnlyIntegrationBundle",
     "record_integration_receipt",
     "record_integration_result",
     "UrllibJsonTransport",

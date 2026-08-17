@@ -178,7 +178,7 @@ def render_page(
 
 def render_workspace() -> str:
     """Render a small operator workspace backed by the case APIs."""
-    return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SupportMaster Case Workspace</title><style>body{font-family:system-ui;background:#0a1020;color:#edf3ff;margin:0;padding:32px}main{max-width:1000px;margin:auto}a{color:#8fc5ff}.case{border:1px solid #31476a;border-radius:12px;padding:16px;margin:12px 0;background:#0d182d}.muted{color:#a9bad5}</style></head><body><main><h1>SupportMaster Case Workspace</h1><p class="muted">Tenant-scoped cases, evidence, planning, resolution, and escalation.</p><div id="cases">Loading cases…</div><script>fetch('/api/cases').then(r=>r.json()).then(data=>{const root=document.getElementById('cases'); if(!data.cases.length){root.textContent='No cases yet.';return;} root.innerHTML=data.cases.map(c=>`<article class="case"><a href="/api/cases/${encodeURIComponent(c.case_id)}"><strong>${c.title}</strong></a><div class="muted">${c.status} · ${c.source_system} · ${c.case_id}</div><p>${c.description.slice(0,240)}</p></article>`).join('');}).catch(e=>document.getElementById('cases').textContent='Unable to load cases: '+e);</script></main></body></html>"""
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SupportMaster Case Workspace</title><style>body{font-family:system-ui;background:#0a1020;color:#edf3ff;margin:0;padding:32px}main{max-width:1100px;margin:auto}a{color:#8fc5ff}.case{border:1px solid #31476a;border-radius:12px;padding:16px;margin:12px 0;background:#0d182d}.muted{color:#a9bad5}.badge{display:inline-block;border-radius:999px;padding:3px 9px;background:#203553;margin:3px;font-size:.8rem}.action{color:#ffd479}.timeline{border-left:2px solid #31476a;padding-left:16px}.stage{margin:10px 0}.stage strong{color:#8fc5ff}.activity{margin-top:14px;font-size:.85rem}.review{border:1px solid #7d6030;border-radius:10px;padding:10px;margin:12px 0;background:#211a0c}</style></head><body><main><h1>SupportMaster Case Workspace</h1><p class="muted">Tenant-scoped cases, evidence, planning, resolution, and escalation.</p><div id="review" class="review">Loading review queue…</div><div id="cases">Loading cases…</div><script>const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); function show(snapshot,activity){const gates=Object.entries(snapshot.gate_statuses||{}).map(([k,v])=>`<span class="badge">${esc(k)}: ${esc(v)}</span>`).join(''); const timeline=(snapshot.timeline||[]).map(e=>`<div class="stage"><strong>${esc(e.stage)}</strong> · ${esc(e.status)}<div class="muted">${esc(e.detail)}</div></div>`).join(''); const audit=(activity||[]).slice(-8).reverse().map(e=>`<div class="muted">${esc(e.event_type)} · ${esc(e.recorded_at)}</div>`).join('')||'<div class="muted">No durable activity recorded yet.</div>'; return `<article class="case"><h2>${esc(snapshot.case.title)}</h2><div class="muted">${esc(snapshot.case.status)} · ${esc(snapshot.case.source_system)} · ${esc(snapshot.case.case_id)}</div><p>${esc(snapshot.case.description)}</p><p class="action"><strong>Next action:</strong> ${esc(snapshot.next_action)}</p><div>${gates}</div><div class="timeline">${timeline}</div><div class="activity"><strong>Recent audit activity</strong>${audit}</div></article>`;} fetch('/api/reviews/metrics').then(r=>r.json()).then(m=>{document.getElementById('review').innerHTML='<strong>Human review queue:</strong> '+esc(m.open_count)+' open · '+esc(m.expiring_count)+' expiring within 24 hours · '+esc(m.approvals)+' approvals · '+esc(m.rejections)+' rejections';}).catch(()=>document.getElementById('review').textContent='Human review queue unavailable.'); fetch('/api/cases').then(r=>r.json()).then(async data=>{const root=document.getElementById('cases'); if(!data.cases.length){root.textContent='No cases yet.';return;} const views=await Promise.all(data.cases.map(async c=>{const base='/api/cases/'+encodeURIComponent(c.case_id); return {snapshot:await fetch(base).then(r=>r.json()),activity:await fetch(base+'/activity').then(r=>r.json()).then(r=>r.events||[])}})); root.innerHTML=views.map(v=>show(v.snapshot,v.activity)).join('');}).catch(e=>document.getElementById('cases').textContent='Unable to load cases: '+esc(e));</script></main></body></html>"""
 
 
 class SupportMasterHandler(BaseHTTPRequestHandler):
@@ -202,6 +202,42 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
                 else:
                     case_id = path.rsplit("/", 1)[-1]
                     self._send_json(workspace.snapshot(case_id, auth.principal.tenant_id).model_dump(mode="json"), status=200)
+            except KeyError as error:
+                self._send_json({"error": str(error)}, status=404)
+            return
+        if path.startswith("/api/cases/") and path.endswith("/activity"):
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            try:
+                assert auth.principal is not None
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                case_id = path.split("/")[3]
+                self._send_json({"events": [event.model_dump(mode="json") for event in CaseWorkspaceService(store).activity(case_id, auth.principal.tenant_id)]}, status=200)
+            except KeyError as error:
+                self._send_json({"error": str(error)}, status=404)
+            return
+        if path == "/api/reviews":
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            try:
+                assert auth.principal is not None
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                from .review_queue import ReviewQueueService
+                self._send_json(ReviewQueueService(store).snapshot(auth.principal.tenant_id).model_dump(mode="json"), status=200)
+            except KeyError as error:
+                self._send_json({"error": str(error)}, status=404)
+            return
+        if path == "/api/reviews/metrics":
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            try:
+                assert auth.principal is not None
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                from .review_queue import ReviewQueueService
+                self._send_json(ReviewQueueService(store).metrics(auth.principal.tenant_id).model_dump(mode="json"), status=200)
             except KeyError as error:
                 self._send_json({"error": str(error)}, status=404)
             return

@@ -20,6 +20,21 @@ class WorkspaceRun(BaseModel):
     updated_at: Any = None
 
 
+class WorkspaceTimelineEvent(BaseModel):
+    """Operator-facing projection of one workflow stage."""
+
+    stage: str
+    status: str
+    detail: str
+
+
+class CaseActivityEvent(BaseModel):
+    sequence: int
+    run_id: str
+    event_type: str
+    recorded_at: Any
+
+
 class CaseWorkspaceSnapshot(BaseModel):
     case: SupportCase
     organization: OrganizationProfile | None = None
@@ -27,3 +42,7 @@ class CaseWorkspaceSnapshot(BaseModel):
     planning: PlanningAssessment | None = None
     resolution: ResolutionBundle | None = None
     runs: list[WorkspaceRun] = Field(default_factory=list)
+    workflow_stage: str = "INTAKE"
+    next_action: str = "Review the case and begin investigation."
+    gate_statuses: dict[str, str] = Field(default_factory=dict)
+    timeline: list[WorkspaceTimelineEvent] = Field(default_factory=list)

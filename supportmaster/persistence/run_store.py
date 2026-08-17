@@ -932,6 +932,24 @@ class SQLiteRunStore:
             self._set_task_status(task, "EXPIRED")
         return task
 
+    def list_review_tasks(self, tenant_id: str, *, status: str | None = None) -> list[HumanReviewTask]:
+        """List review tasks whose durable run belongs to one tenant."""
+        query = "SELECT review_tasks.task_json, runs.state_json FROM review_tasks JOIN runs ON runs.run_id = review_tasks.run_id"
+        params: list[Any] = []
+        if status:
+            query += " WHERE review_tasks.status=?"
+            params.append(status)
+        query += " ORDER BY review_tasks.created_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        tasks: list[HumanReviewTask] = []
+        for row in rows:
+            state = json.loads(row["state_json"])
+            if state.get("tenant_id", "default") != tenant_id:
+                continue
+            tasks.append(HumanReviewTask.model_validate(json.loads(row["task_json"])))
+        return tasks
+
     def decide_review_task(
         self,
         task_id: str,

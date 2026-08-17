@@ -24,12 +24,28 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(snapshot.case.case_id, self.case.case_id)
         self.assertIsNotNone(snapshot.investigation)
         self.assertEqual(snapshot.runs, [])
+        self.assertEqual(snapshot.workflow_stage, "INVESTIGATION")
+        self.assertEqual(snapshot.gate_statuses["investigation"], "BLOCKED")
+        self.assertTrue(snapshot.timeline)
+        self.assertIn("evidence", snapshot.next_action.lower())
 
     def test_status_update_is_tenant_scoped(self) -> None:
         updated = self.workspace.update_status(self.case.case_id, "tenant-a", "ESCALATED")
         self.assertEqual(updated.status, "ESCALATED")
         with self.assertRaises(TenantAccessError):
             self.workspace.update_status(self.case.case_id, "tenant-b", "CLOSED")
+
+    def test_activity_is_redacted_and_tenant_scoped(self) -> None:
+        from supportmaster.workflow_state import SupportMasterState
+        state = SupportMasterState(run_id="run-a", tenant_id="tenant-a")
+        state.case_id = self.case.case_id
+        self.store.create_run(state)
+        self.store.append_event(state.run_id, "CASE_STARTED", {"secret": "not returned"})
+        events = self.workspace.activity(self.case.case_id, "tenant-a")
+        self.assertIn("CASE_STARTED", [event.event_type for event in events])
+        self.assertFalse(hasattr(events[0], "payload"))
+        with self.assertRaises(TenantAccessError):
+            self.workspace.activity(self.case.case_id, "tenant-b")
 
     def test_list_filters_by_tenant_and_status(self) -> None:
         self.assertEqual(len(self.workspace.list("tenant-a")), 1)

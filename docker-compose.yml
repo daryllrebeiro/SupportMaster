@@ -1,0 +1,17 @@
+services:
+  supportmaster:
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      SUPPORTMASTER_AUTH_MODE: OPTIONAL
+      SUPPORTMASTER_RUN_DB: /app/.supportmaster/runs.db
+      SUPPORTMASTER_SESSION_DB: /app/.supportmaster/sessions.db
+    volumes:
+      - supportmaster-data:/app/.supportmaster
+    restart: unless-stopped
+
+volumes:
+  supportmaster-data:

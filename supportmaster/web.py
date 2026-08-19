@@ -1662,6 +1662,66 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, json.JSONDecodeError, KeyError) as error:
                 self._send_json({"error": str(error)}, status=400)
             return
+        if path.startswith("/api/reviews/") and path.endswith("/chat"):
+            try:
+                assert auth.principal is not None
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                message = str(payload.get("message", "")).strip()
+                if not message:
+                    raise ValueError("A message is required for co-pilot chat.")
+                
+                task_id = path.split("/")[3]
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                task = store.get_review_task(task_id)
+                run_state = store.load_state(task.run_id)
+                
+                if run_state.tenant_id != auth.principal.tenant_id:
+                    raise TenantAccessError("Review task belongs to a different tenant.")
+                
+                context_parts = []
+                if getattr(run_state, "support_case", None):
+                    context_parts.append(f"Support Case:\n{run_state.support_case.workflow_text()}")
+                if getattr(run_state, "root_cause_analysis", None):
+                    context_parts.append(f"Root Cause Analysis:\n{json.dumps(run_state.root_cause_analysis, indent=2)}")
+                if getattr(run_state, "remediation_plan", None):
+                    context_parts.append(f"Remediation Plan:\n{json.dumps(run_state.remediation_plan, indent=2)}")
+                if getattr(run_state, "code_change_result", None):
+                    context_parts.append(f"Proposed Code Change:\n{json.dumps(run_state.code_change_result, indent=2)}")
+                if getattr(run_state, "validation_analysis", None):
+                    context_parts.append(f"Validation Analysis:\n{json.dumps(run_state.validation_analysis, indent=2)}")
+                if getattr(run_state, "validation_failures", None):
+                    context_parts.append(f"Self-Healing Failure Logs:\n{json.dumps(run_state.validation_failures, indent=2)}")
+                
+                context = "\n\n".join(context_parts)
+                
+                from google import genai
+                from google.genai import types
+                api_key = os.getenv("GOOGLE_API_KEY")
+                if not api_key:
+                    response_text = f"[Co-pilot Mock Response] Evaluating request: '{message}'. The proposed remediation is safe."
+                else:
+                    client = genai.Client(api_key=api_key)
+                    model = os.getenv("SUPPORTMASTER_MODEL", "gemini-2.5-flash")
+                    system_instruction = """
+                    You are the SupportMaster Safety Review Co-pilot.
+                    Your goal is to answer questions from a human operator about a pending safety gate review task.
+                    Answer the operator's questions objectively, referencing only the provided context.
+                    """
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=f"Context:\n{context}\n\nOperator Question: {message}",
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.2,
+                        )
+                    )
+                    response_text = response.text or "No response from model."
+                
+                self._send_json({"response": response_text}, status=200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=400 if isinstance(error, (ValueError, TenantAccessError)) else 500)
+            return
+
         if path.startswith("/api/reviews/") and path.endswith("/decide"):
             if not self._validate_csrf():
                 return

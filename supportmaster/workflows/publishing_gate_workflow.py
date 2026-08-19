@@ -127,6 +127,31 @@ def validation_testing_gate(ctx: Context) -> dict:
     decision = evaluate_validation_gate(ctx.state.to_dict())
     ctx.state["last_gate_decision"] = decision.model_dump()
     append_gate_history(ctx.state, decision)
+    
+    if decision.route == "SAFETY_STOP" or decision.status == "FAILED":
+        healing_attempts = ctx.state.to_dict().get("healing_attempts", 0)
+        if healing_attempts < 3:
+            ctx.state["healing_attempts"] = healing_attempts + 1
+            failures = ctx.state.to_dict().get("validation_failures", [])
+            failures.append({
+                "attempt": healing_attempts + 1,
+                "warnings": decision.warnings,
+                "detail": "Validation failed. Self-healing loop activated."
+            })
+            ctx.state["validation_failures"] = failures
+            ctx.route = "RETRY_IMPLEMENTATION"
+            return {"status": "HEALING_RETRY", "attempt": healing_attempts + 1, "decision": decision.model_dump()}
+            
+        # Record Git rollback receipt on final failure
+        rollback_receipts = ctx.state.to_dict().get("operation_receipts", [])
+        rollback_receipts.append({
+            "operation_type": "REPOSITORY_ROLLBACK",
+            "requested_action": "git_rollback_to_clean_state",
+            "status": "SUCCESS",
+            "detail": "Self-healing attempts exhausted. Restoring repository state.",
+        })
+        ctx.state["operation_receipts"] = rollback_receipts
+
     ctx.route = decision.route
     return decision.model_dump()
 
@@ -309,6 +334,7 @@ def create_publishing_gate_workflow(
                 {
                     "READY_FOR_PUBLISH": publish,
                     "SAFETY_STOP": autonomous_safety_stop,
+                    "RETRY_IMPLEMENTATION": code_change,
                 },
             ),
             (

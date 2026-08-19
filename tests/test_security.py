@@ -52,6 +52,24 @@ class SecurityTests(unittest.TestCase):
             with self.assertRaises(TenantAccessError):
                 store.load_state_for_tenant("run-secure", "tenant-b")
 
+    def test_expiry_aware_authentication(self) -> None:
+        import time
+        settings_active = load_security_settings({
+            "SUPPORTMASTER_AUTH_MODE": "REQUIRED",
+            "SUPPORTMASTER_API_KEYS": f"secret-a|alice|tenant-a|RUN_EXECUTE|{int(time.time() + 3600)}",
+        })
+        authenticator_active = Authenticator(settings_active)
+        self.assertEqual(authenticator_active.authenticate({"Authorization": "Bearer secret-a"}).status, "AUTHENTICATED")
+
+        settings_expired = load_security_settings({
+            "SUPPORTMASTER_AUTH_MODE": "REQUIRED",
+            "SUPPORTMASTER_API_KEYS": f"secret-b|bob|tenant-b|RUN_EXECUTE|{int(time.time() - 10)}",
+        })
+        authenticator_expired = Authenticator(settings_expired)
+        result = authenticator_expired.authenticate({"Authorization": "Bearer secret-b"})
+        self.assertEqual(result.status, "REJECTED")
+        self.assertEqual(result.reason, "The credentials have expired.")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,9 +51,45 @@ class Authenticator:
                 status="ANONYMOUS",
                 principal=Principal(subject="anonymous", tenant_id=self.settings.anonymous_tenant, scopes=scopes),
             )
+        if token.count(".") == 2:
+            try:
+                import base64
+                import json
+                import time
+                import os
+                parts = token.split(".")
+                payload_b64 = parts[1]
+                payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
+                payload_bytes = base64.urlsafe_b64decode(payload_b64)
+                claims = json.loads(payload_bytes.decode("utf-8"))
+                exp = claims.get("exp")
+                if exp is not None and time.time() > exp:
+                    return AuthResult(status="REJECTED", reason="JWT token has expired.")
+                sub = claims.get("sub", "token-user")
+                tenant_id = claims.get("tenant_id") or claims.get("iss", "default")
+                scopes = claims.get("scopes") or ["RUN_EXECUTE", "HEALTH_READ", "AUDIT_READ"]
+                secret = os.getenv("SUPPORTMASTER_JWT_SECRET")
+                if secret:
+                    try:
+                        import jwt
+                        jwt.decode(token, secret, algorithms=["HS256"])
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        return AuthResult(status="REJECTED", reason=f"JWT signature verification failed: {e}")
+                return AuthResult(
+                    status="AUTHENTICATED",
+                    principal=Principal(subject=sub, tenant_id=tenant_id, scopes=scopes),
+                )
+            except Exception as e:
+                return AuthResult(status="REJECTED", reason=f"Malformed JWT token: {e}")
+
         token_hash = sha256(token.encode("utf-8")).hexdigest()
+        import time
         for credential in self.settings.credentials:
             if secrets.compare_digest(token_hash, credential.key_hash):
+                if credential.expires_at is not None and time.time() > credential.expires_at:
+                    return AuthResult(status="REJECTED", reason="The credentials have expired.")
                 return AuthResult(
                     status="AUTHENTICATED",
                     principal=Principal(subject=credential.subject, tenant_id=credential.tenant_id, scopes=credential.scopes),

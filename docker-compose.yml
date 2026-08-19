@@ -1,17 +1,34 @@
+version: '3.8'
+
 services:
-  supportmaster:
-    build: .
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supportmaster-web
     ports:
       - "8001:8001"
-    env_file:
-      - .env
     environment:
-      SUPPORTMASTER_AUTH_MODE: OPTIONAL
-      SUPPORTMASTER_RUN_DB: /app/.supportmaster/runs.db
-      SUPPORTMASTER_SESSION_DB: /app/.supportmaster/sessions.db
+      - PORT=8001
+      - SUPPORTMASTER_AUTH_MODE=REQUIRED
+      - SUPPORTMASTER_API_KEYS=secret|operator|demo-acme|RUN_EXECUTE,AUDIT_READ
+      - SUPPORTMASTER_AUTO_APPROVE=true
+      - SUPPORTMASTER_RUN_DB=/app/data/runs.db
     volumes:
-      - supportmaster-data:/app/.supportmaster
-    restart: unless-stopped
+      - data_volume:/app/data
+    restart: always
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supportmaster-worker
+    command: python -m supportmaster.runtime.durable_worker
+    environment:
+      - SUPPORTMASTER_RUN_DB=/app/data/runs.db
+    volumes:
+      - data_volume:/app/data
+    restart: always
 
 volumes:
-  supportmaster-data:
+  data_volume:

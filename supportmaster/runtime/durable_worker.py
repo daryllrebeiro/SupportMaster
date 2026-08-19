@@ -93,16 +93,35 @@ class DurableTaskWorker:
         self.telemetry = telemetry
         self.metrics = metrics or (telemetry.metrics if telemetry else MetricsRegistry())
 
+    def _claim_task_with_retry(self) -> DurableTask | None:
+        import sqlite3
+        import time
+        from random import uniform
+        attempts = 5
+        backoff = 0.05
+        for i in range(attempts):
+            try:
+                return self.store.claim_next_task(
+                    self.worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() or "busy" in str(e).lower():
+                    if i == attempts - 1:
+                        raise
+                    time.sleep(backoff + uniform(0, 0.02))
+                    backoff *= 2
+                else:
+                    raise
+        return None
+
     def run_once(
         self,
         handler: TaskHandler,
         *,
         cancel_event: Event | None = None,
     ) -> WorkerTaskResult | None:
-        task = self.store.claim_next_task(
-            self.worker_id,
-            lease_seconds=self.lease_seconds,
-        )
+        task = self._claim_task_with_retry()
         if task is None:
             return None
         started = monotonic()
@@ -125,10 +144,23 @@ class DurableTaskWorker:
             result = self._finish(task, dict(output), cancellation)
             self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
             return result
-        except Exception as error:
-            result = self._fail(task, error, cancellation)
-            self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
-            return result
+        except BaseException as error:
+            if isinstance(error, Exception):
+                result = self._fail(task, error, cancellation)
+                self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
+                return result
+            else:
+                try:
+                    self.store.fail_task(
+                        task.task_id,
+                        self.worker_id,
+                        f"Process terminated: {type(error).__name__}",
+                        retryable=True,
+                        retry_delay_seconds=5,
+                    )
+                except Exception:
+                    pass
+                raise error
         finally:
             heartbeat.stop()
 
@@ -138,10 +170,7 @@ class DurableTaskWorker:
         *,
         cancel_event: Event | None = None,
     ) -> WorkerTaskResult | None:
-        task = self.store.claim_next_task(
-            self.worker_id,
-            lease_seconds=self.lease_seconds,
-        )
+        task = self._claim_task_with_retry()
         if task is None:
             return None
         started = monotonic()
@@ -164,10 +193,23 @@ class DurableTaskWorker:
             result = self._finish(task, dict(output), cancellation)
             self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
             return result
-        except Exception as error:
-            result = self._fail(task, error, cancellation)
-            self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
-            return result
+        except BaseException as error:
+            if isinstance(error, Exception):
+                result = self._fail(task, error, cancellation)
+                self.metrics.observe("supportmaster.tasks.duration_seconds", monotonic() - started, labels={"task": task.task_name, "outcome": result.outcome})
+                return result
+            else:
+                try:
+                    self.store.fail_task(
+                        task.task_id,
+                        self.worker_id,
+                        f"Process terminated: {type(error).__name__}",
+                        retryable=True,
+                        retry_delay_seconds=5,
+                    )
+                except Exception:
+                    pass
+                raise error
         finally:
             heartbeat.stop()
 

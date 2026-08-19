@@ -6,8 +6,15 @@ import argparse
 import asyncio
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
+import secrets
 import json
+import logging
 import os
+
+logger = logging.getLogger("supportmaster.web")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -18,7 +25,7 @@ from google.genai import types
 
 from .agent import create_root_agent
 from .config import DEFAULT_MODEL, supported_models
-from .persistence import SQLiteRunStore
+from .persistence import SQLiteRunStore, TenantAccessError
 from .runtime import DurableTaskWorker
 from .telemetry import MetricsRegistry, SQLiteTelemetrySink, TelemetryRecorder
 from .operations import HealthReporter, RunAdmissionController, load_operation_settings
@@ -31,6 +38,10 @@ from .planning import PlanningService
 from .models.planning import PlanningAssessment
 from .workflow_state import SupportMasterState
 from .workspace import CaseWorkspaceService
+from .rate_limiter import TenantRateLimiter
+
+
+RATE_LIMITER = TenantRateLimiter(default_capacity=5.0, default_fill_rate=0.5)
 
 
 MOCK_JIRA_ISSUE = """Jira key: FIN-1847
@@ -109,7 +120,8 @@ def render_page(
     status: str | None = None,
     result: str | None = None,
 ) -> str:
-    """Render the model picker without placing secrets in the browser."""
+    """Render the model picker with premium dark glass aesthetics and template quick-loaders."""
+    escaped_jira = escape(MOCK_JIRA_ISSUE).replace('`', '\\`').replace('\n', '\\n')
     options = "\n".join(
         (
             f'<option value="{escape(model)}"'
@@ -120,10 +132,10 @@ def render_page(
         for model in supported_models()
     )
     status_html = (
-        f'<p class="status" role="status">{escape(status)}</p>' if status else ""
+        f'<div class="status-card" role="status"><div class="status-indicator"></div><p class="status-text">{escape(status)}</p></div>' if status else ""
     )
     result_html = (
-        f'<section class="results"><h2>Workflow events</h2><pre>{escape(result)}</pre></section>'
+        f'<section class="results-card"><h2>Workflow events</h2><pre class="events-log">{escape(result)}</pre></section>'
         if result
         else ""
     )
@@ -132,62 +144,1234 @@ def render_page(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SupportMaster</title>
+    <title>SupportMaster Control Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-      :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; }}
-      body {{ margin: 0; min-height: 100vh; display: grid; place-items: center;
-        background: radial-gradient(circle at top left, #1e3a5f, #0a1020 55%); color: #edf3ff; }}
-      main {{ width: min(540px, calc(100% - 40px)); padding: 38px; border: 1px solid #31476a;
-        border-radius: 22px; background: rgba(13, 24, 45, .92); box-shadow: 0 24px 64px #020714aa; }}
-      h1 {{ margin: 0; font-size: 2rem; }}
-      .eyebrow {{ color: #8fc5ff; font-size: .8rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }}
-      .intro {{ color: #b9c9e2; line-height: 1.55; }}
-      label {{ display: block; margin: 28px 0 8px; font-weight: 650; }}
-      select, button {{ width: 100%; box-sizing: border-box; border-radius: 10px; font: inherit; }}
-      select {{ padding: 13px; background: #111f38; border: 1px solid #46638d; color: inherit; }}
-      textarea {{ width: 100%; min-height: 360px; box-sizing: border-box; resize: vertical; padding: 13px;
-        border-radius: 10px; background: #111f38; border: 1px solid #46638d; color: inherit; font: .85rem/1.45 ui-monospace, monospace; }}
-      button {{ margin-top: 22px; padding: 13px; border: 0; background: #48a5ff; color: #071426; font-weight: 750; cursor: pointer; }}
-      button:hover {{ background: #79beff; }}
-      .status {{ margin: 22px 0 0; padding: 13px; border-radius: 10px; background: #153d36; color: #b7f5db; }}
-      .results {{ margin-top: 26px; }}
-      h2 {{ font-size: 1.1rem; }}
-      pre {{ max-height: 680px; overflow: auto; white-space: pre-wrap; padding: 15px; border-radius: 10px; background: #071120; border: 1px solid #2b4265; color: #d5e5fb; }}
-      .note {{ color: #91a6c4; font-size: .86rem; line-height: 1.45; }}
+      :root {{
+        --bg-color: #030712;
+        --card-bg: rgba(17, 24, 39, 0.7);
+        --border-color: rgba(55, 65, 81, 0.5);
+        --accent-blue: #3b82f6;
+        --accent-glow: rgba(59, 130, 246, 0.15);
+        --text-primary: #f3f4f6;
+        --text-secondary: #9ca3af;
+      }}
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 10% 20%, rgba(17, 34, 64, 0.8) 0%, rgba(3, 7, 18, 1) 90%);
+        color: var(--text-primary);
+        font-family: 'Inter', system-ui, sans-serif;
+      }}
+      main {{
+        width: min(640px, calc(100% - 40px));
+        margin: 40px 0;
+        padding: 40px;
+        border: 1px solid var(--border-color);
+        border-radius: 24px;
+        background: var(--card-bg);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px var(--accent-glow);
+        transition: transform 0.3s ease;
+      }}
+      .eyebrow {{
+        color: var(--accent-blue);
+        font-family: 'Outfit', sans-serif;
+        font-size: .85rem;
+        font-weight: 700;
+        letter-spacing: .15em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+        text-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+      }}
+      h1 {{
+        margin: 0 0 12px;
+        font-family: 'Outfit', sans-serif;
+        font-size: 2.5rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        background: linear-gradient(135deg, #ffffff 30%, #93c5fd 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }}
+      .intro {{
+        color: var(--text-secondary);
+        font-size: 1rem;
+        line-height: 1.6;
+        margin-bottom: 32px;
+      }}
+      label {{
+        display: block;
+        margin: 24px 0 8px;
+        font-family: 'Outfit', sans-serif;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #e5e7eb;
+      }}
+      select, textarea, button {{
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 12px;
+        font: inherit;
+        transition: all 0.2s ease;
+      }}
+      select {{
+        padding: 14px;
+        background: rgba(17, 24, 39, 0.8);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        cursor: pointer;
+      }}
+      select:focus, textarea:focus {{
+        outline: none;
+        border-color: var(--accent-blue);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+      }}
+      textarea {{
+        width: 100%;
+        min-height: 280px;
+        box-sizing: border-box;
+        resize: vertical;
+        padding: 14px;
+        background: rgba(17, 24, 39, 0.8);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-size: .85rem;
+        line-height: 1.5;
+      }}
+      .fixture-templates {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }}
+      .fixture-btn {{
+        background: rgba(31, 41, 55, 0.6);
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        padding: 8px 14px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 550;
+        width: auto;
+        cursor: pointer;
+      }}
+      .fixture-btn:hover {{
+        background: var(--accent-blue);
+        color: #ffffff;
+        border-color: var(--accent-blue);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+      }}
+      button[type="submit"] {{
+        margin-top: 28px;
+        padding: 16px;
+        border: 0;
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        color: #ffffff;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        font-size: 1.05rem;
+        cursor: pointer;
+        box-shadow: 0 4px 20px rgba(37, 99, 235, 0.3);
+      }}
+      button[type="submit"]:hover {{
+        background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 24px rgba(59, 130, 246, 0.4);
+      }}
+      button[type="submit"]:active {{
+        transform: translateY(0);
+      }}
+      .status-card {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 24px;
+        padding: 14px 18px;
+        border-radius: 12px;
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+      }}
+      .status-indicator {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #10b981;
+        box-shadow: 0 0 10px #10b981;
+        animation: pulse 1.5s infinite;
+      }}
+      .status-text {{
+        margin: 0;
+        font-size: 0.9rem;
+        color: #a7f3d0;
+        font-weight: 500;
+      }}
+      .results-card {{
+        margin-top: 32px;
+      }}
+      .results-card h2 {{
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.2rem;
+        margin-bottom: 12px;
+        color: #e5e7eb;
+      }}
+      .events-log {{
+        max-height: 500px;
+        overflow: auto;
+        white-space: pre-wrap;
+        padding: 20px;
+        border-radius: 12px;
+        background: rgba(3, 7, 18, 0.9);
+        border: 1px solid var(--border-color);
+        color: #d1d5db;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.8rem;
+        line-height: 1.6;
+      }}
+      .note-card {{
+        margin-top: 36px;
+        padding: 16px;
+        border-radius: 12px;
+        background: rgba(31, 41, 55, 0.3);
+        border: 1px solid rgba(75, 85, 99, 0.2);
+      }}
+      .note-card p {{
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.85rem;
+        line-height: 1.5;
+        text-align: center;
+      }}
+      .nav-links {{
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 24px;
+        font-size: 0.9rem;
+      }}
+      .nav-links a {{
+        color: var(--accent-blue);
+        text-decoration: none;
+        font-weight: 550;
+      }}
+      .nav-links a:hover {{
+        text-decoration: underline;
+      }}
+      @keyframes pulse {{
+        0% {{ transform: scale(0.95); opacity: 0.5; }}
+        50% {{ transform: scale(1.1); opacity: 1; }}
+        100% {{ transform: scale(0.95); opacity: 0.5; }}
+      }}
     </style>
   </head>
   <body>
     <main>
-      <p class="eyebrow">Controlled autonomous support engineering</p>
+      <p class="eyebrow">Autonomous Support Engineering</p>
       <h1>SupportMaster</h1>
-      <p class="intro">Choose the Gemini model for this workflow execution.</p>
+      <p class="intro">Configure execution environment and trigger the ADK-gated agent workflow.</p>
+      
       <form action="/" method="post">
-        <label for="model">Gemini model</label>
+        <label for="model">Gemini Model</label>
         <select id="model" name="model">{options}</select>
-        <label for="issue">Support issue</label>
+        
+        <label>Load Scenario Template</label>
+        <div class="fixture-templates" id="templates-list">
+          <button type="button" class="fixture-btn" onclick="loadDefault()">Acme Invoice Failure</button>
+        </div>
+
+        <label for="issue">Support Ticket Description</label>
         <textarea id="issue" name="issue" required>{escape(issue)}</textarea>
+        
         <button type="submit">Run SupportMaster</button>
       </form>
+      
       {status_html}
       {result_html}
-      <p class="note">The workflow uses the selected model for this run. SupportMaster must still distinguish plans, hypotheses, and evidence from verified engineering actions.</p>
+      
+      <div class="nav-links">
+        <a href="/workspace">Operator Case Workspace</a>
+        <a href="/health/live" target="_blank">Liveness Status</a>
+        <a href="/health/ready" target="_blank">Readiness Status</a>
+      </div>
+
+      <div class="note-card">
+        <p>The workflow executes durably using isolated SQLite workspaces. All mutations remain subject to authorization and verification gates.</p>
+      </div>
     </main>
+
+    <script>
+      const defaultJira = `{escaped_jira}`;
+      function loadDefault() {{
+        document.getElementById('issue').value = defaultJira;
+      }}
+
+      // Fetch additional fixture scenarios from API
+      fetch('/api/fixtures')
+        .then(r => r.json())
+        .then(data => {{
+          if (data && data.fixtures) {{
+            const list = document.getElementById('templates-list');
+            data.fixtures.forEach(name => {{
+              if (name === 'saas_authentication') return; // Skip default fixture since it's Acme SSO
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'fixture-btn';
+              btn.textContent = name.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+              btn.onclick = () => {{
+                fetch('/api/fixtures/' + name)
+                  .then(res => res.json())
+                  .then(content => {{
+                    if (content) {{
+                      // Format description for the textarea
+                      let desc = "Title: " + (content.summary || content.title || "Support Case") + "\\n";
+                      desc += "Reporter: " + (content.reporter || "Unknown") + "\\n";
+                      desc += "Priority: " + (content.priority || "Medium") + "\\n";
+                      desc += "Environment: " + (content.environment || "Production") + "\\n\\n";
+                      desc += "Description:\\n" + (content.body || content.description || "") + "\\n\\n";
+                      if (content.steps) {{
+                        desc += "Reproduction Steps:\\n" + content.steps.map((s, i) => (i+1) + ". " + s).join('\\n') + "\\n\\n";
+                      }}
+                      if (content.impact) desc += "Customer Impact:\\n" + content.impact;
+                      document.getElementById('issue').value = desc;
+                    }}
+                  }});
+              }};
+              list.appendChild(btn);
+            }});
+          }}
+        }}).catch(() => {{}});
+    </script>
   </body>
 </html>"""
 
 
-def render_workspace() -> str:
-    """Render a small operator workspace backed by the case APIs."""
-    return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SupportMaster Case Workspace</title><style>body{font-family:system-ui;background:#0a1020;color:#edf3ff;margin:0;padding:32px}main{max-width:1100px;margin:auto}a{color:#8fc5ff}.case{border:1px solid #31476a;border-radius:12px;padding:16px;margin:12px 0;background:#0d182d}.muted{color:#a9bad5}.badge{display:inline-block;border-radius:999px;padding:3px 9px;background:#203553;margin:3px;font-size:.8rem}.action{color:#ffd479}.timeline{border-left:2px solid #31476a;padding-left:16px}.stage{margin:10px 0}.stage strong{color:#8fc5ff}.activity{margin-top:14px;font-size:.85rem}.review{border:1px solid #7d6030;border-radius:10px;padding:10px;margin:12px 0;background:#211a0c}</style></head><body><main><h1>SupportMaster Case Workspace</h1><p class="muted">Tenant-scoped cases, evidence, planning, resolution, and escalation.</p><div id="review" class="review">Loading review queue…</div><div id="cases">Loading cases…</div><script>const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); function show(snapshot,activity){const gates=Object.entries(snapshot.gate_statuses||{}).map(([k,v])=>`<span class="badge">${esc(k)}: ${esc(v)}</span>`).join(''); const timeline=(snapshot.timeline||[]).map(e=>`<div class="stage"><strong>${esc(e.stage)}</strong> · ${esc(e.status)}<div class="muted">${esc(e.detail)}</div></div>`).join(''); const audit=(activity||[]).slice(-8).reverse().map(e=>`<div class="muted">${esc(e.event_type)} · ${esc(e.recorded_at)}</div>`).join('')||'<div class="muted">No durable activity recorded yet.</div>'; return `<article class="case"><h2>${esc(snapshot.case.title)}</h2><div class="muted">${esc(snapshot.case.status)} · ${esc(snapshot.case.source_system)} · ${esc(snapshot.case.case_id)}</div><p>${esc(snapshot.case.description)}</p><p class="action"><strong>Next action:</strong> ${esc(snapshot.next_action)}</p><div>${gates}</div><div class="timeline">${timeline}</div><div class="activity"><strong>Recent audit activity</strong>${audit}</div></article>`;} fetch('/api/reviews/metrics').then(r=>r.json()).then(m=>{document.getElementById('review').innerHTML='<strong>Human review queue:</strong> '+esc(m.open_count)+' open · '+esc(m.expiring_count)+' expiring within 24 hours · '+esc(m.approvals)+' approvals · '+esc(m.rejections)+' rejections';}).catch(()=>document.getElementById('review').textContent='Human review queue unavailable.'); fetch('/api/cases').then(r=>r.json()).then(async data=>{const root=document.getElementById('cases'); if(!data.cases.length){root.textContent='No cases yet.';return;} const views=await Promise.all(data.cases.map(async c=>{const base='/api/cases/'+encodeURIComponent(c.case_id); return {snapshot:await fetch(base).then(r=>r.json()),activity:await fetch(base+'/activity').then(r=>r.json()).then(r=>r.events||[])}})); root.innerHTML=views.map(v=>show(v.snapshot,v.activity)).join('');}).catch(e=>document.getElementById('cases').textContent='Unable to load cases: '+esc(e));</script></main></body></html>"""
+def render_workspace(csrf_token: str = "") -> str:
+    """Render a premium operator workspace backed by the case APIs."""
+    html = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SupportMaster Operator Workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bg-color: #030712;
+        --card-bg: rgba(17, 24, 39, 0.7);
+        --border-color: rgba(55, 65, 81, 0.5);
+        --accent-blue: #3b82f6;
+        --accent-glow: rgba(59, 130, 246, 0.15);
+        --text-primary: #f3f4f6;
+        --text-secondary: #9ca3af;
+        --green-bright: #10b981;
+        --amber-bright: #f59e0b;
+        --red-bright: #ef4444;
+      }
+      body {
+        font-family: 'Inter', system-ui, sans-serif;
+        background: radial-gradient(circle at 50% 0%, rgba(17, 34, 64, 0.5) 0%, rgba(3, 7, 18, 1) 100%);
+        color: var(--text-primary);
+        margin: 0;
+        padding: 40px;
+        min-height: 100vh;
+      }
+      main {
+        max-width: 1200px;
+        margin: auto;
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 32px;
+        border-bottom: 1px solid var(--border-color);
+        padding-bottom: 24px;
+      }
+      .header-title h1 {
+        margin: 0;
+        font-family: 'Outfit', sans-serif;
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #ffffff 40%, #93c5fd 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .header-title p {
+        margin: 4px 0 0;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+      }
+      .back-btn {
+        background: rgba(31, 41, 55, 0.6);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        padding: 10px 20px;
+        border-radius: 10px;
+        text-decoration: none;
+        font-weight: 550;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+      }
+      .back-btn:hover {
+        background: var(--accent-blue);
+        border-color: var(--accent-blue);
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 20px;
+        margin-bottom: 32px;
+      }
+      .metric-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(8px);
+      }
+      .metric-card h3 {
+        margin: 0 0 8px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: var(--text-secondary);
+        letter-spacing: 0.05em;
+      }
+      .metric-card .value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        font-family: 'Outfit', sans-serif;
+        color: #ffffff;
+      }
+      .metric-card.alert {
+        border-color: rgba(245, 158, 11, 0.4);
+        box-shadow: 0 0 15px rgba(245, 158, 11, 0.1);
+      }
+      .metric-card.alert .value {
+        color: var(--amber-bright);
+      }
+      .review-queue-section {
+        margin-bottom: 32px;
+      }
+      .review-task-card {
+        background: rgba(30, 27, 22, 0.85);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 10px 25px rgba(245, 158, 11, 0.05);
+        margin-bottom: 24px;
+      }
+      .review-task-card h3 {
+        margin: 0 0 12px;
+        color: var(--amber-bright);
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.2rem;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .review-task-card h3::before {
+        content: '';
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--amber-bright);
+        box-shadow: 0 0 8px var(--amber-bright);
+      }
+      .review-details {
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: #e5e7eb;
+        margin-bottom: 20px;
+      }
+      .review-details strong {
+        color: var(--text-primary);
+      }
+      .review-form {
+        background: rgba(17, 24, 39, 0.5);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 20px;
+        margin-top: 16px;
+      }
+      .review-form h4 {
+        margin: 0 0 16px;
+        font-family: 'Outfit', sans-serif;
+        color: #ffffff;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .form-group {
+        display: flex;
+        flex-direction: column;
+      }
+      .form-group.full-width {
+        grid-column: span 2;
+      }
+      .form-group label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+      }
+      .form-group input, .form-group select, .form-group textarea {
+        background: rgba(3, 7, 18, 0.8);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        padding: 10px;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 0.9rem;
+      }
+      .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+        outline: none;
+        border-color: var(--accent-blue);
+      }
+      .scopes-checklist {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 8px;
+        background: rgba(3, 7, 18, 0.6);
+        border: 1px solid var(--border-color);
+        padding: 12px;
+        border-radius: 8px;
+        max-height: 120px;
+        overflow-y: auto;
+      }
+      .scope-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        color: var(--text-primary);
+        cursor: pointer;
+      }
+      .scope-item input {
+        cursor: pointer;
+        width: auto;
+      }
+      .btn-submit {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        border: 0;
+        color: #ffffff;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: 'Outfit', sans-serif;
+        box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
+        transition: all 0.2s ease;
+      }
+      .btn-submit:hover {
+        background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(245, 158, 11, 0.35);
+      }
+      .cases-title {
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.4rem;
+        margin-bottom: 20px;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .case-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 24px;
+        backdrop-filter: blur(8px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+      }
+      .case-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 12px;
+      }
+      .case-title {
+        margin: 0;
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #ffffff;
+      }
+      .case-meta {
+        display: flex;
+        gap: 12px;
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        margin-top: 6px;
+      }
+      .case-meta span::after {
+        content: ' • ';
+        margin-left: 12px;
+        color: var(--border-color);
+      }
+      .case-meta span:last-child::after {
+        content: '';
+      }
+      .case-status-badge {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        background: rgba(59, 130, 246, 0.1);
+        color: var(--accent-blue);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+      }
+      .case-status-badge.completed {
+        background: rgba(16, 185, 129, 0.1);
+        color: var(--green-bright);
+        border-color: rgba(16, 185, 129, 0.2);
+        box-shadow: 0 0 10px rgba(16, 185, 129, 0.05);
+      }
+      .case-status-badge.safety-stop {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--red-bright);
+        border-color: rgba(239, 68, 68, 0.2);
+        box-shadow: 0 0 10px rgba(239, 68, 68, 0.05);
+      }
+      .case-status-badge.open {
+        background: rgba(245, 158, 11, 0.1);
+        color: var(--amber-bright);
+        border-color: rgba(245, 158, 11, 0.2);
+      }
+      .case-description {
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: #d1d5db;
+        margin: 16px 0;
+        white-space: pre-wrap;
+      }
+      .action-banner {
+        background: rgba(59, 130, 246, 0.08);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin: 18px 0;
+        font-size: 0.9rem;
+      }
+      .action-banner strong {
+        color: var(--accent-blue);
+        font-family: 'Outfit', sans-serif;
+      }
+      .gates-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 16px 0;
+      }
+      .gate-badge {
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        background: rgba(31, 41, 55, 0.6);
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .gate-badge.allow, .gate-badge.ready, .gate-badge.passed {
+        border-color: rgba(16, 185, 129, 0.3);
+        color: var(--green-bright);
+        background: rgba(16, 185, 129, 0.05);
+      }
+      .gate-badge.deny, .gate-badge.safety-stop {
+        border-color: rgba(239, 68, 68, 0.3);
+        color: var(--red-bright);
+        background: rgba(239, 68, 68, 0.05);
+      }
+      .gate-badge.pause, .gate-badge.request-information {
+        border-color: rgba(245, 158, 11, 0.3);
+        color: var(--amber-bright);
+        background: rgba(245, 158, 11, 0.05);
+      }
+      .timeline-section {
+        margin-top: 24px;
+        border-top: 1px solid var(--border-color);
+        padding-top: 20px;
+      }
+      .timeline-section h4 {
+        margin: 0 0 16px;
+        font-family: 'Outfit', sans-serif;
+        color: #ffffff;
+      }
+      .timeline-flow {
+        position: relative;
+        border-left: 2px solid rgba(55, 65, 81, 0.6);
+        padding-left: 24px;
+        margin-left: 10px;
+      }
+      .timeline-item {
+        position: relative;
+        margin-bottom: 20px;
+      }
+      .timeline-item:last-child {
+        margin-bottom: 0;
+      }
+      .timeline-dot {
+        position: absolute;
+        left: -29px;
+        top: 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #374151;
+        border: 4px solid var(--bg-color);
+      }
+      .timeline-dot.complete {
+        background: var(--green-bright);
+        box-shadow: 0 0 8px var(--green-bright);
+      }
+      .timeline-dot.safety-stop {
+        background: var(--red-bright);
+        box-shadow: 0 0 8px var(--red-bright);
+      }
+      .timeline-dot.partial, .timeline-dot.pause {
+        background: var(--amber-bright);
+        box-shadow: 0 0 8px var(--amber-bright);
+      }
+      .timeline-content strong {
+        font-family: 'Outfit', sans-serif;
+        color: #ffffff;
+        font-size: 0.95rem;
+      }
+      .timeline-status {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        font-weight: 600;
+        margin-left: 8px;
+      }
+      .timeline-status.complete { color: var(--green-bright); }
+      .timeline-status.safety-stop { color: var(--red-bright); }
+      .timeline-status.partial { color: var(--amber-bright); }
+      .timeline-detail {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        margin-top: 4px;
+        line-height: 1.4;
+      }
+      .activity-timeline {
+        margin-top: 24px;
+        background: rgba(3, 7, 18, 0.6);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .activity-timeline h4 {
+        margin: 0 0 12px;
+        font-family: 'Outfit', sans-serif;
+        color: #ffffff;
+      }
+      .activity-list {
+        max-height: 200px;
+        overflow-y: auto;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.78rem;
+        line-height: 1.6;
+        color: var(--text-secondary);
+      }
+      .activity-row {
+        margin-bottom: 6px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .activity-row .event-type {
+        color: var(--accent-blue);
+      }
+      .activity-row .timestamp {
+        color: #4b5563;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="header">
+        <div class="header-title">
+          <h1>SupportMaster Case Workspace</h1>
+          <p>Tenant-scoped execution dashboard, verification audits, and human-in-the-loop gates.</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 20px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 0.9rem; font-weight: 600; color: var(--text-primary); margin: 0;">
+            <input type="checkbox" id="auto-approve-toggle" onchange="toggleAutoApprove(this.checked)" style="width: auto; height: auto; cursor: pointer; accent-color: var(--accent-blue);">
+            Autonomous Mode (Auto-Approve)
+          </label>
+          <a href="/" class="back-btn">← Back to Picker</a>
+        </div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <h3>Total Cases</h3>
+          <div class="value" id="metrics-total">-</div>
+        </div>
+        <div class="metric-card alert" id="metrics-open-card">
+          <h3>Open Review Tasks</h3>
+          <div class="value" id="metrics-open">-</div>
+        </div>
+        <div class="metric-card">
+          <h3>Total Approvals</h3>
+          <div class="value" id="metrics-approvals">-</div>
+        </div>
+        <div class="metric-card" id="metrics-expiring-card">
+          <h3>Expiring Tasks (24h)</h3>
+          <div class="value" id="metrics-expiring">-</div>
+        </div>
+      </div>
+
+      <div class="review-queue-section" id="review-queue">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <div class="cases-title">
+        <span>Active Case Pipeline</span>
+      </div>
+      
+      <div id="cases-list">
+        <!-- Rendered dynamically -->
+      </div>
+    </main>
+
+    <script>
+      const esc = s => String(s ?? '').replace(/[&<>\\"/]/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        '/': '&#x2F;'
+      }[c]));
+
+      function loadWorkspace() {
+        // Fetch Review Queue Metrics
+        fetch('/api/reviews/metrics')
+          .then(r => r.json())
+          .then(m => {
+            document.getElementById('metrics-total').textContent = m.total;
+            document.getElementById('metrics-open').textContent = m.open_count;
+            document.getElementById('metrics-approvals').textContent = m.approvals;
+            document.getElementById('metrics-expiring').textContent = m.expiring_count;
+            
+            if (m.open_count > 0) {
+              document.getElementById('metrics-open-card').classList.add('alert');
+            } else {
+              document.getElementById('metrics-open-card').classList.remove('alert');
+            }
+          }).catch(console.error);
+
+        // Fetch Open Review Tasks
+        fetch('/api/reviews')
+          .then(r => r.json())
+          .then(data => {
+            const container = document.getElementById('review-queue');
+            if (!data.tasks || data.tasks.length === 0) {
+              container.innerHTML = '';
+              return;
+            }
+            
+            const openTasks = data.tasks.filter(t => t.status === 'OPEN');
+            if (openTasks.length === 0) {
+              container.innerHTML = '';
+              return;
+            }
+            
+            container.innerHTML = openTasks.map(task => {
+              const scopesList = task.allowed_scopes.map(s => 
+                `<label class="scope-item"><input type="checkbox" name="scopes" value="\${esc(s)}" checked> \${esc(s)}</label>`
+              ).join('');
+              
+              return `
+                <div class="review-task-card">
+                  <h3>Action Required: Human Review Pending</h3>
+                  <div class="review-details">
+                    <p><strong>Reason:</strong> \${esc(task.reason)}</p>
+                    <p><strong>Blocking Reasons:</strong> \${esc(task.blocking_reasons.join(', ') || 'None')}</p>
+                    <p><strong>Required Actions:</strong> \${esc(task.required_actions.join(', ') || 'None')}</p>
+                  </div>
+                  
+                  <form class="review-form" id="form-\${esc(task.task_id)}" onsubmit="submitReview(event, '\${esc(task.task_id)}')">
+                    <h4>Submit Review Decision</h4>
+                    <div class="form-grid">
+                      <div class="form-group">
+                        <label>Reviewer Name</label>
+                        <input type="text" name="reviewer" required placeholder="e.g. Alice Smith">
+                      </div>
+                      <div class="form-group">
+                        <label>Decision</label>
+                        <select name="decision" required onchange="toggleScopes(this, '\${esc(task.task_id)}')">
+                          <option value="APPROVE">APPROVE (Resume execution)</option>
+                          <option value="REJECT">REJECT (Halt run)</option>
+                        </select>
+                      </div>
+                      <div class="form-group full-width" id="scopes-group-\${esc(task.task_id)}">
+                        <label>Authorize Scopes</label>
+                        <div class="scopes-checklist">
+                          \${scopesList}
+                        </div>
+                      </div>
+                      <div class="form-group">
+                        <label>Resume Token</label>
+                        <input type="text" name="resume_token" required placeholder="Enter token hash/secret">
+                      </div>
+                      <div class="form-group">
+                        <label>Comment</label>
+                        <input type="text" name="comment" placeholder="Optional audit notes">
+                      </div>
+                    </div>
+                    <button type="submit" class="btn-submit">Submit Authorization Decision</button>
+                  </form>
+                </div>
+              `;
+            }).join('');
+          }).catch(console.error);
+
+        // Fetch Case Snapshots
+        fetch('/api/cases')
+          .then(r => r.json())
+          .then(async data => {
+            const list = document.getElementById('cases-list');
+            if (!data.cases || data.cases.length === 0) {
+              list.innerHTML = '<p class="muted">No cases in the execution pipeline yet.</p>';
+              return;
+            }
+            
+            const views = await Promise.all(data.cases.map(async c => {
+              const base = '/api/cases/' + encodeURIComponent(c.case_id);
+              return {
+                snapshot: await fetch(base).then(r => r.json()),
+                activity: await fetch(base + '/activity').then(r => r.json()).then(r => r.events || [])
+              };
+            }));
+            
+            list.innerHTML = views.map(v => {
+              const snap = v.snapshot;
+              const statusClass = snap.case.status === 'RESOLVED' || snap.case.status === 'COMPLETED' ? 'completed' : 
+                                  snap.case.status === 'SAFETY_STOP' ? 'safety-stop' : 'open';
+              
+              const gatesBadges = Object.entries(snap.gate_statuses || {}).map(([name, status]) => {
+                const badgeClass = String(status).toLowerCase().replace(/_/g, '-');
+                return `<span class="gate-badge \${badgeClass}">\${esc(name)}: \${esc(status)}</span>`;
+              }).join('');
+
+              const timelineItems = (snap.timeline || []).map(event => {
+                let dotClass = 'complete';
+                if (event.status === 'SAFETY_STOP' || event.status === 'FAILED') dotClass = 'safety-stop';
+                else if (event.status === 'PARTIAL' || event.status === 'PAUSED_FOR_HUMAN_REVIEW') dotClass = 'partial';
+                
+                const statusLabelClass = dotClass;
+                return `
+                  <div class="timeline-item">
+                    <div class="timeline-dot \${dotClass}"></div>
+                    <div class="timeline-content">
+                      <strong>\${esc(event.stage)}</strong>
+                      <span class="timeline-status \${statusLabelClass}">\${esc(event.status)}</span>
+                      <div class="timeline-detail">\${esc(event.detail)}</div>
+                    </div>
+                  </div>
+                `;
+              }).join('');
+
+              const activityRows = v.activity.slice(-5).reverse().map(e => `
+                <div class="activity-row">
+                  <span class="event-type">\${esc(e.event_type)}</span>
+                  <span class="timestamp">\${esc(e.recorded_at.split('T')[1].slice(0, 8))}</span>
+                </div>
+              `).join('') || '<div class="muted">No telemetry events.</div>';
+
+              return `
+                <div class="case-card">
+                  <div class="case-header">
+                    <div>
+                      <h3 class="case-title">\${esc(snap.case.title)}</h3>
+                      <div class="case-meta">
+                        <span>Case ID: \${esc(snap.case.case_id)}</span>
+                        <span>Tenant: \${esc(snap.case.tenant_id)}</span>
+                        <span>Source: \${esc(snap.case.source_system)}</span>
+                      </div>
+                    </div>
+                    <span class="case-status-badge \${statusClass}">\${esc(snap.case.status)}</span>
+                  </div>
+                  
+                  <div class="case-description">\${esc(snap.case.description)}</div>
+                  
+                  <div class="action-banner">
+                    <strong>Recommended Next Action:</strong> \${esc(snap.next_action)}
+                  </div>
+                  
+                  <div class="gates-container">
+                    \${gatesBadges}
+                  </div>
+                  
+                  <div class="timeline-section">
+                    <h4>Workflow Stages</h4>
+                    <div class="timeline-flow">
+                      \${timelineItems}
+                    </div>
+                  </div>
+                  
+                  <div class="activity-timeline">
+                    <h4>Audit Event Log</h4>
+                    <div class="activity-list">
+                      \${activityRows}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          }).catch(e => {
+            document.getElementById('cases-list').innerHTML = '<p class="muted">Error loading cases: ' + esc(e) + '</p>';
+          });
+      }
+
+      function toggleScopes(select, taskId) {
+        const group = document.getElementById('scopes-group-' + taskId);
+        if (select.value === 'REJECT') {
+          group.style.display = 'none';
+        } else {
+          group.style.display = 'block';
+        }
+      }
+
+      function submitReview(event, taskId) {
+        event.preventDefault();
+        const form = event.target;
+        const reviewer = form.reviewer.value;
+        const decision = form.decision.value;
+        const resume_token = form.resume_token.value;
+        const comment = form.comment.value;
+        
+        let approved_scopes = [];
+        if (decision === 'APPROVE') {
+          const checkboxes = form.querySelectorAll('input[name="scopes"]:checked');
+          checkboxes.forEach(cb => approved_scopes.push(cb.value));
+        }
+
+        const payload = {
+          reviewer,
+          decision,
+          resume_token,
+          approved_scopes,
+          comment
+        };
+
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        fetch('/api/reviews/' + encodeURIComponent(taskId) + '/decide', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-SupportMaster-API-Key': 'secret|operator|demo-acme|RUN_EXECUTE',
+            'X-CSRF-Token': csrfToken
+          },
+          body: JSON.stringify(payload)
+        })
+        .then(async r => {
+          const data = await r.json();
+          if (!r.ok) {
+            throw new Error(data.error || 'Server returned error ' + r.status);
+          }
+          alert('Decision submitted successfully! Resuming workflow in the background.');
+          loadWorkspace();
+        })
+        .catch(err => {
+          alert('Failed to submit decision: ' + err.message);
+        });
+      }
+
+      loadWorkspace();
+      setInterval(loadWorkspace, 5000);
+
+      function loadAutoApproveSetting() {
+        fetch('/api/settings/auto-approve', {
+          headers: {
+            'X-SupportMaster-API-Key': 'secret|operator|demo-acme|AUDIT_READ'
+          }
+        })
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('auto-approve-toggle').checked = !!data.enabled;
+        }).catch(console.error);
+      }
+
+      function toggleAutoApprove(checked) {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        fetch('/api/settings/auto-approve', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-SupportMaster-API-Key': 'secret|operator|demo-acme|RUN_EXECUTE',
+            'X-CSRF-Token': csrfToken
+          },
+          body: JSON.stringify({ enabled: checked })
+        })
+        .then(r => {
+          if (!r.ok) throw new Error('Failed to update setting');
+        })
+        .catch(err => {
+          alert('Error: ' + err.message);
+          document.getElementById('auto-approve-toggle').checked = !checked;
+        });
+      }
+
+      loadAutoApproveSetting();
+    </script>
+  </body>
+</html>"""
+    html = html.replace("<title>SupportMaster Operator Workspace</title>", f'<title>SupportMaster Operator Workspace</title>\n    <meta name="csrf-token" content="{csrf_token}">')
+    return html
+
+
+async def check_safety_gates_and_handle_reviews(
+    run_store: SQLiteRunStore,
+    state: SupportMasterState,
+    task_payload: dict[str, Any],
+    session_service: SqliteSessionService,
+    app_name: str,
+    user_id: str,
+) -> None:
+    """Evaluate terminal state: auto-approve and resume if requested, else create review task."""
+    if state.terminal_status == "SAFETY_STOP" and not state.pending_human_review:
+        last_gate = state.last_gate_decision.gate if state.last_gate_decision else "REVIEW"
+        allowed_scopes = ["IMPLEMENTATION"] if last_gate == "IMPLEMENTATION_AUTHORIZATION" else (
+            ["PUBLISH"] if last_gate == "PUBLISH_AUTHORIZATION" else ["IMPLEMENTATION", "PUBLISH"]
+        )
+        reason = state.last_gate_decision.reason if state.last_gate_decision else "Safety gate stopped the workflow."
+        
+        # Check if auto-approve is enabled
+        auto_approve_file = Path(".supportmaster/auto_approve.flag")
+        is_auto_approve = os.getenv("SUPPORTMASTER_AUTO_APPROVE") == "true" or auto_approve_file.exists()
+        
+        if is_auto_approve:
+            from .models.control import AuthorizationGrant
+            from datetime import datetime, timezone, timedelta
+            
+            # Issue grants autonomously
+            for scope in allowed_scopes:
+                grant = AuthorizationGrant(
+                    scope=scope,
+                    approval_id=f"auto-approve-{uuid4().hex[:8]}",
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                )
+                state.authorizations.append(grant)
+            
+            state.terminal_status = None
+            state.terminal_outcome = None
+            state.pending_human_review = None
+            
+            # Sync back to session state
+            try:
+                session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=state.run_id)
+                if session is not None:
+                    from google.adk.events.event import Event, EventActions
+                    # Update session state using standard event delta append
+                    event = Event(
+                        actions=EventActions(
+                            state_delta=state.model_dump(mode="json")
+                        )
+                    )
+                    await session_service.append_event(session, event)
+            except Exception as e:
+                run_store.append_event(state.run_id, "AUTO_APPROVE_SYNC_FAILED", {"error": str(e)})
+            
+            run_store.save_state(state, event_type="AUTO_APPROVED")
+            run_store.append_event(state.run_id, "HUMAN_REVIEW_DECIDED", {
+                "reviewer": "Auto-Approve Agent",
+                "decision": "APPROVE",
+                "comment": f"Automatically approved safety gate: {last_gate}"
+            })
+            
+            # Re-enqueue the workflow task to continue execution automatically
+            new_idempotency_key = f"{state.run_id}:adk_workflow:resume-auto-{uuid4().hex[:8]}"
+            run_store.enqueue_task(
+                state.run_id,
+                task_name="adk_workflow",
+                idempotency_key=new_idempotency_key,
+                payload=task_payload,
+                max_attempts=3,
+            )
+            
+            # Start background worker sync
+            from threading import Thread
+            Thread(
+                target=run_resumed_worker_sync,
+                args=(state.run_id, task_payload.get("model_name")),
+                daemon=True,
+            ).start()
+        else:
+            # Create review task for manual operator approval
+            task_obj, token = run_store.create_review_task(
+                state.run_id,
+                reason=reason,
+                allowed_scopes=allowed_scopes,
+                resume_condition=f"Approval of safety gate {last_gate}"
+            )
+            state.pending_human_review = task_obj
+            state.terminal_status = "HUMAN_REVIEW_REQUIRED"
+            state.terminal_outcome = "PAUSED_FOR_HUMAN_REVIEW"
+            run_store.save_state(state, event_type="RUN_PAUSED_FOR_HUMAN_REVIEW")
+            
+            # Sync back to session state
+            try:
+                session = await session_service.get_session(app_name, user_id, state.run_id)
+                session.state = state.model_dump(mode="json")
+                await session_service.save_session(session)
+            except Exception:
+                pass
 
 
 class SupportMasterHandler(BaseHTTPRequestHandler):
+    def _validate_csrf(self) -> bool:
+        if not self.headers.get("Cookie") and not self.headers.get("cookie"):
+            return True
+        cookie = SimpleCookie(self.headers.get("Cookie") or self.headers.get("cookie"))
+        cookie_token = cookie.get("csrf-token")
+        cookie_val = cookie_token.value if cookie_token else None
+        header_val = self.headers.get("X-CSRF-Token") or self.headers.get("x-csrf-token")
+        if not cookie_val or not header_val or not secrets.compare_digest(cookie_val, header_val):
+            self._send_json({"error": "CSRF validation failed."}, status=403)
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/workspace":
             auth = AUTHENTICATOR.authenticate(self.headers)
-            if self._authorized(auth, "AUDIT_READ"):
-                self._send_page(render_workspace())
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            cookie = SimpleCookie(self.headers.get("Cookie"))
+            cookie_token = cookie.get("csrf-token")
+            csrf_token = cookie_token.value if cookie_token else None
+            if not csrf_token:
+                csrf_token = secrets.token_hex(16)
+            page = render_workspace(csrf_token)
+            body = page.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie", f"csrf-token={csrf_token}; Path=/; HttpOnly; SameSite=Strict")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if path == "/api/cases" or (path.startswith("/api/cases/") and path.count("/") == 3):
             auth = AUTHENTICATOR.authenticate(self.headers)
@@ -240,7 +1424,40 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
                 self._send_json(ReviewQueueService(store).metrics(auth.principal.tenant_id).model_dump(mode="json"), status=200)
             except KeyError as error:
                 self._send_json({"error": str(error)}, status=404)
+        if path == "/api/fixtures" or path.startswith("/api/fixtures/"):
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            try:
+                fixtures_dir = Path("fixtures/cases")
+                if path == "/api/fixtures":
+                    fixtures = []
+                    if fixtures_dir.exists():
+                        for p in fixtures_dir.glob("*.json"):
+                            fixtures.append(p.stem)
+                    self._send_json({"fixtures": sorted(fixtures)}, status=200)
+                else:
+                    fixture_name = path.split("/")[-1]
+                    if not fixture_name.isalnum() and "_" not in fixture_name and "-" not in fixture_name:
+                        raise ValueError("Invalid fixture name.")
+                    fixture_path = fixtures_dir / f"{fixture_name}.json"
+                    if not fixture_path.exists():
+                        raise FileNotFoundError(f"Fixture {fixture_name} not found.")
+                    with open(fixture_path, "r", encoding="utf-8") as f:
+                        content = json.load(f)
+                    self._send_json(content, status=200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=404 if "not found" in str(error).lower() else 500)
             return
+        if path == "/api/settings/auto-approve":
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            flag_file = Path(".supportmaster/auto_approve.flag")
+            enabled = flag_file.exists() or os.getenv("SUPPORTMASTER_AUTO_APPROVE") == "true"
+            self._send_json({"enabled": enabled}, status=200)
+            return
+
         if path in {"/health/live", "/health/ready"}:
             auth = AUTHENTICATOR.authenticate(self.headers)
             if path.endswith("/ready") and not self._authorized(auth, "HEALTH_READ"):
@@ -251,6 +1468,59 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
                 report.model_dump(mode="json"),
                 status=200 if report.status in {"LIVE", "READY"} else 503,
             )
+            return
+        if path.startswith("/api/stream/"):
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            run_id = path.split("/")[3]
+            store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+            # Send Server-Sent Events headers
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            import time
+            seen_ids: set[str] = set()
+            try:
+                for _ in range(120):  # Poll up to 120s (60 * 2s intervals)
+                    try:
+                        events = store.list_events(run_id)
+                    except Exception:
+                        events = []
+                    for evt in events:
+                        evt_id = f"{evt.get('recorded_at', '')}-{evt.get('event_type', '')}"
+                        if evt_id not in seen_ids:
+                            seen_ids.add(evt_id)
+                            data = json.dumps({
+                                "event_type": evt.get("event_type"),
+                                "recorded_at": evt.get("recorded_at"),
+                                "payload": evt.get("payload") or {},
+                            })
+                            msg = f"data: {data}\n\n"
+                            try:
+                                self.wfile.write(msg.encode("utf-8"))
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError):
+                                return
+                    time.sleep(2)
+            except Exception:
+                pass
+            return
+        if path == "/api/metrics/scorecard":
+            auth = AUTHENTICATOR.authenticate(self.headers)
+            if not self._authorized(auth, "AUDIT_READ"):
+                return
+            try:
+                assert auth.principal is not None
+                from .evaluation.scorecard import ScorecardService
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                scorecard = ScorecardService(store).compute(auth.principal.tenant_id)
+                self._send_json(scorecard, status=200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=500)
             return
         query = parse_qs(urlparse(self.path).query)
         selected_model = query.get("model", [DEFAULT_MODEL])[0]
@@ -267,6 +1537,24 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Request body exceeds the configured limit."}, status=413)
             return
 
+        if path == "/api/settings/auto-approve":
+            if not self._validate_csrf():
+                return
+            try:
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                enabled = bool(payload.get("enabled", False))
+                flag_file = Path(".supportmaster/auto_approve.flag")
+                flag_file.parent.mkdir(parents=True, exist_ok=True)
+                if enabled:
+                    flag_file.write_text("true")
+                else:
+                    if flag_file.exists():
+                        flag_file.unlink()
+                self._send_json({"enabled": enabled}, status=200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=400)
+            return
+
         if path == "/api/organizations":
             try:
                 assert auth.principal is not None
@@ -281,9 +1569,66 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, json.JSONDecodeError) as error:
                 self._send_json({"error": str(error)}, status=400)
             return
+        if path == "/api/connectors/jira":
+            try:
+                assert auth.principal is not None
+                if not RATE_LIMITER.consume(auth.principal.tenant_id):
+                    self._send_json({"error": "Rate limit exceeded. Please try again later."}, status=429)
+                    return
+                body_bytes = self.rfile.read(content_length)
+                secret = os.getenv("SUPPORTMASTER_JIRA_SECRET")
+                sig = self.headers.get("X-Hub-Signature") or self.headers.get("x-hub-signature")
+                from .connectors import JiraConnector
+                if secret and sig and not JiraConnector.verify_signature(body_bytes, secret, sig):
+                    self._send_json({"error": "Invalid webhook signature."}, status=401)
+                    return
+                payload = json.loads(body_bytes.decode("utf-8"))
+                mapped = JiraConnector.map_payload(payload)
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                from .intake import CaseIntakeService
+                result = CaseIntakeService(store).ingest(
+                    mapped,
+                    source_system="JIRA",
+                    tenant_id=auth.principal.tenant_id,
+                )
+                self._send_json(result.model_dump(mode="json"), status=201 if result.status == "CREATED" else 200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=400)
+            return
+
+        if path == "/api/connectors/zendesk":
+            try:
+                assert auth.principal is not None
+                if not RATE_LIMITER.consume(auth.principal.tenant_id):
+                    self._send_json({"error": "Rate limit exceeded. Please try again later."}, status=429)
+                    return
+                body_bytes = self.rfile.read(content_length)
+                secret = os.getenv("SUPPORTMASTER_ZENDESK_SECRET")
+                sig = self.headers.get("X-Zendesk-Signature") or self.headers.get("x-zendesk-signature")
+                from .connectors import ZendeskConnector
+                if secret and sig and not ZendeskConnector.verify_signature(body_bytes, secret, sig):
+                    self._send_json({"error": "Invalid webhook signature."}, status=401)
+                    return
+                payload = json.loads(body_bytes.decode("utf-8"))
+                mapped = ZendeskConnector.map_payload(payload)
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                from .intake import CaseIntakeService
+                result = CaseIntakeService(store).ingest(
+                    mapped,
+                    source_system="ZENDESK",
+                    tenant_id=auth.principal.tenant_id,
+                )
+                self._send_json(result.model_dump(mode="json"), status=201 if result.status == "CREATED" else 200)
+            except Exception as error:
+                self._send_json({"error": str(error)}, status=400)
+            return
+
         if path == "/api/cases":
             try:
                 assert auth.principal is not None
+                if not RATE_LIMITER.consume(auth.principal.tenant_id):
+                    self._send_json({"error": "Rate limit exceeded. Please try again later."}, status=429)
+                    return
                 payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise ValueError("Case intake payload must be a JSON object.")
@@ -317,6 +1662,74 @@ class SupportMasterHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, json.JSONDecodeError, KeyError) as error:
                 self._send_json({"error": str(error)}, status=400)
             return
+        if path.startswith("/api/reviews/") and path.endswith("/decide"):
+            if not self._validate_csrf():
+                return
+            try:
+                assert auth.principal is not None
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("Review payload must be a JSON object.")
+                task_id = path.split("/")[3]
+                reviewer = str(payload.get("reviewer", "")).strip()
+                decision = str(payload.get("decision", "")).strip()
+                resume_token = str(payload.get("resume_token", "")).strip()
+                approved_scopes = [str(s) for s in payload.get("approved_scopes", [])]
+                comment = str(payload.get("comment", "")).strip()
+
+                if decision not in {"APPROVE", "REJECT"}:
+                    raise ValueError("Decision must be APPROVE or REJECT.")
+
+                store = SQLiteRunStore(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+                task = store.get_review_task(task_id)
+                run_state = store.load_state(task.run_id)
+                if run_state.tenant_id != auth.principal.tenant_id:
+                    raise TenantAccessError("Review task belongs to a different tenant.")
+
+                updated_task = store.decide_review_task(
+                    task_id,
+                    reviewer=reviewer,
+                    decision=decision,
+                    resume_token=resume_token,
+                    approved_scopes=approved_scopes,
+                    comment=comment,
+                )
+
+                if decision == "APPROVE":
+                    store.resume_run(
+                        run_id=updated_task.run_id,
+                        task_id=task_id,
+                        resume_token=resume_token,
+                    )
+                    updated_task = store.get_review_task(task_id)
+                    with store._connect() as connection:
+                        row = connection.execute(
+                            "SELECT payload_json FROM task_queue WHERE run_id=? AND task_name='adk_workflow' LIMIT 1",
+                            (updated_task.run_id,),
+                        ).fetchone()
+                    if row is not None:
+                        task_payload = json.loads(row["payload_json"])
+                        new_idempotency_key = f"{updated_task.run_id}:adk_workflow:resume-{uuid4().hex[:8]}"
+                        store.enqueue_task(
+                            updated_task.run_id,
+                            task_name="adk_workflow",
+                            idempotency_key=new_idempotency_key,
+                            payload=task_payload,
+                            max_attempts=3,
+                        )
+                        from threading import Thread
+                        model_name = task_payload.get("model_name")
+                        Thread(
+                            target=run_resumed_worker_sync,
+                            args=(updated_task.run_id, model_name),
+                            daemon=True,
+                        ).start()
+
+                self._send_json(updated_task.model_dump(mode="json"), status=200)
+            except (ValueError, TypeError, json.JSONDecodeError, KeyError, PermissionError) as error:
+                self._send_json({"error": str(error)}, status=400)
+            return
+
         form = parse_qs(self.rfile.read(content_length).decode("utf-8"))
         selected_model = form.get("model", [DEFAULT_MODEL])[0]
         issue = form.get("issue", [MOCK_JIRA_ISSUE])[0].strip()
@@ -531,6 +1944,14 @@ async def _run_workflow(
             )
             state = SupportMasterState.model_validate(persisted_session.state)
             run_store.save_state(state, event_type="ADK_RUN_SNAPSHOT")
+            await check_safety_gates_and_handle_reviews(
+                run_store=run_store,
+                state=state,
+                task_payload={"issue": workflow_issue, "case_id": case.case_id, "model_name": model_name, "session_id": session.id},
+                session_service=session_service,
+                app_name=app_name,
+                user_id=user_id,
+            )
         except Exception as error:
             run_store.append_event(
                 session.id,
@@ -553,10 +1974,126 @@ async def _run_workflow(
     return worker_result.result.get("text", "The workflow returned no text events.")
 
 
+async def run_resumed_worker(run_id: str, model_name: str | None) -> None:
+    session_db = Path(
+        os.getenv("SUPPORTMASTER_SESSION_DB", ".supportmaster/adk_sessions.db")
+    )
+    run_db = Path(os.getenv("SUPPORTMASTER_RUN_DB", ".supportmaster/runs.db"))
+    session_service = SqliteSessionService(str(session_db))
+    run_store = SQLiteRunStore(run_db)
+    metrics = MetricsRegistry()
+    telemetry = TelemetryRecorder(
+        [SQLiteTelemetrySink(run_store)],
+        metrics=metrics,
+    )
+    worker = DurableTaskWorker(
+        run_store,
+        worker_id=f"web-resume-{run_id[:8]}",
+        lease_seconds=60,
+        telemetry=telemetry,
+        metrics=metrics,
+    )
+
+    async def execute_task(task, cancellation):
+        app_name = "supportmaster-local"
+        user_id = f"tenant:{run_store.load_state(run_id).tenant_id}"
+        runner = Runner(
+            app_name=app_name,
+            agent=create_root_agent(model_name),
+            session_service=session_service,
+        )
+        events: list[str] = []
+        issue = task.payload.get("issue", "")
+        message = types.Content(role="user", parts=[types.Part(text=issue)])
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=run_id,
+            new_message=message,
+        ):
+            if cancellation.is_set():
+                break
+            if not event.content or not event.content.parts:
+                continue
+            text = "\n".join(part.text for part in event.content.parts if part.text)
+            if text:
+                events.append(f"[{event.author}]\n{text}")
+                run_store.append_event(
+                    run_id,
+                    "ADK_EVENT",
+                    {"author": event.author, "text": text},
+                )
+                telemetry.emit(
+                    "ADK_EVENT",
+                    run_id=run_id,
+                    task_id=task.task_id,
+                    attributes={"author": event.author, "text": text},
+                )
+                worker.checkpoint(
+                    task,
+                    {"event_index": len(events), "author": event.author},
+                )
+
+        try:
+            persisted_session = await session_service.get_session(
+                app_name=app_name,
+                user_id=user_id,
+                session_id=run_id,
+            )
+            state = SupportMasterState.model_validate(persisted_session.state)
+            run_store.save_state(state, event_type="ADK_RUN_SNAPSHOT")
+            await check_safety_gates_and_handle_reviews(
+                run_store=run_store,
+                state=state,
+                task_payload=task.payload,
+                session_service=session_service,
+                app_name=app_name,
+                user_id=user_id,
+            )
+        except Exception as error:
+            run_store.append_event(
+                run_id,
+                "ADK_RUN_SNAPSHOT_FAILED",
+                {"error": f"{type(error).__name__}: {error}"},
+            )
+            raise
+        return {"text": "\n\n".join(events) or "The workflow returned no text events."}
+
+    try:
+        worker_result = await worker.run_once_async(execute_task)
+        if worker_result and worker_result.outcome == "SUCCEEDED":
+            run_store.mark_run_completed(run_id)
+    except Exception as e:
+        logger.exception(f"Background resumed worker failed for run {run_id}: {e}")
+
+
+def run_resumed_worker_sync(run_id: str, model_name: str | None) -> None:
+    asyncio.run(run_resumed_worker(run_id, model_name))
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
+    import signal
+    import sys
+
     server = ThreadingHTTPServer((host, port), SupportMasterHandler)
-    print(f"SupportMaster model picker running at http://{host}:{port}")
-    server.serve_forever()
+
+    def graceful_shutdown(signum, frame):
+        logger.info("Graceful shutdown signal received. Stopping HTTP server...")
+        from threading import Thread
+        Thread(target=server.shutdown, daemon=True).start()
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, graceful_shutdown)
+        signal.signal(signal.SIGTERM, graceful_shutdown)
+    except ValueError:
+        # signal only works in main thread; ignore if tests run server in subthreads
+        pass
+
+    logger.info(f"SupportMaster model picker running at http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("HTTP server stopped.")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ class ApiKeyCredential(BaseModel):
     subject: str
     tenant_id: str = "default"
     scopes: list[str] = Field(default_factory=list)
+    expires_at: int | None = None
 
 
 class SecuritySettings(BaseModel):
@@ -23,15 +24,21 @@ class SecuritySettings(BaseModel):
 
 
 def _credential(raw: str, index: int) -> ApiKeyCredential:
-    # Format: secret|subject|tenant|scope1,scope2
-    parts = raw.split("|", 3)
+    # Format: secret|subject|tenant|scope1,scope2|expires_at
+    parts = raw.split("|", 4)
     secret = parts[0].strip()
     if not secret:
         raise ValueError("SUPPORTMASTER_API_KEYS contains an empty secret.")
     subject = parts[1].strip() if len(parts) > 1 and parts[1].strip() else f"api-key-{index + 1}"
     tenant = parts[2].strip() if len(parts) > 2 and parts[2].strip() else "default"
     scopes = [item.strip() for item in parts[3].split(",") if item.strip()] if len(parts) > 3 else ["RUN_EXECUTE", "HEALTH_READ", "AUDIT_READ"]
-    return ApiKeyCredential(key_hash=sha256(secret.encode("utf-8")).hexdigest(), subject=subject, tenant_id=tenant, scopes=scopes)
+    expires_at = None
+    if len(parts) > 4 and parts[4].strip():
+        try:
+            expires_at = int(parts[4].strip())
+        except ValueError:
+            raise ValueError(f"Invalid credentials expires_at: {parts[4]}")
+    return ApiKeyCredential(key_hash=sha256(secret.encode("utf-8")).hexdigest(), subject=subject, tenant_id=tenant, scopes=scopes, expires_at=expires_at)
 
 
 def load_security_settings(environ: dict[str, str] | None = None) -> SecuritySettings:

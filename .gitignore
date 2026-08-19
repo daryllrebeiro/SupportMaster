@@ -1,4 +1,4 @@
-﻿.venv/
+.venv/
 __pycache__/
 *.py[cod]
 .env
@@ -7,3 +7,11 @@ __pycache__/
 *.log
 .pytest_cache/
 .vscode/
+.supportmaster/
+audit_log.json
+audit.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+

@@ -1,4 +1,4 @@
-﻿# SupportMaster
+# SupportMaster
 
 SupportMaster is an autonomous customer-support bug investigation and resolution agent.
 
@@ -185,6 +185,10 @@ Run the offline golden-path demo with:
 ```powershell
 .\.venv\Scripts\python.exe -m supportmaster.demo reset
 .\.venv\Scripts\python.exe -m supportmaster.demo run
+# Run specialized demo fixtures
+.\.venv\Scripts\python.exe -m supportmaster.demo run --fixture fixtures/cases/AUTH-001.json
+.\.venv\Scripts\python.exe -m supportmaster.demo run --fixture fixtures/cases/PERF-042.json
+.\.venv\Scripts\python.exe -m supportmaster.demo run --fixture fixtures/cases/DATA-007.json
 .\.venv\Scripts\python.exe -m supportmaster.quality
 ```
 
@@ -193,7 +197,7 @@ organization, and prints the complete intake/investigation/resolution trace.
 It does not call Gemini or mutate external systems. Use `seed` to initialize
 the database without running the scenario.
 
-Run the deterministic unit and routing tests with:
+Run the deterministic unit, memory, and routing tests with:
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -201,3 +205,4 @@ python -m unittest discover -s tests -v
 
 These tests do not call Gemini or require network access. Live ADK execution
 still requires a valid API key and an account-enabled model.
+

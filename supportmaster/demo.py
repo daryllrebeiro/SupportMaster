@@ -31,8 +31,8 @@ def seed(db_path: str | Path = DEFAULT_DB) -> Path:
         OrganizationProfile(
             organization_id=DEMO_TENANT,
             display_name="Acme Demo Organization",
-            products=["Identity Gateway"],
-            services=["Identity Gateway"],
+            products=["Identity Gateway", "AuthEngine", "APIGateway", "ExportEngine"],
+            services=["Identity Gateway", "AuthEngine", "APIGateway", "ExportEngine"],
         )
     )
     return path

@@ -210,7 +210,7 @@ def append_gate_history(
         policy_version=policy_version,
     )
     history = state.get("gate_history") or []
-    history.append(record.model_dump())
+    history.append(record.model_dump(mode="json"))
     state["gate_history"] = history
     return record
 
@@ -221,7 +221,7 @@ def append_policy_decision(
 ) -> PolicyDecision:
     """Record a policy result before any future executor can consume it."""
     decisions = state.get("policy_decisions") or []
-    decisions.append(decision.model_dump())
+    decisions.append(decision.model_dump(mode="json"))
     state["policy_decisions"] = decisions
     return decision
 
@@ -251,7 +251,7 @@ def issue_authorization(
         evidence_keys=decision.evidence_keys,
     )
     authorizations = state.get("authorizations") or []
-    authorizations.append(grant.model_dump())
+    authorizations.append(grant.model_dump(mode="json"))
     state["authorizations"] = authorizations
     return grant
 
@@ -262,7 +262,7 @@ def append_operation_receipts(
 ) -> None:
     """Persist verified external-operation evidence in workflow state."""
     existing = state.get("operation_receipts") or []
-    existing.extend(receipt.model_dump() for receipt in receipts)
+    existing.extend(receipt.model_dump(mode="json") for receipt in receipts)
     state["operation_receipts"] = existing
 
 
@@ -296,10 +296,11 @@ def issue_human_authorization(
         expires_at=expires_at,
         policy_version=policy_version,
     )
-    authorizations.append(grant)
     if isinstance(state, MutableMapping):
+        authorizations.append(grant.model_dump(mode="json"))
         state["authorizations"] = authorizations
     else:
+        authorizations.append(grant)
         state.authorizations = authorizations
     return grant
 

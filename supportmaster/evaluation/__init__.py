@@ -2,5 +2,6 @@
 
 from .suite import EndToEndWorkflowSimulator, EndToEndWorkflowSuite, FunctionalEvaluationSuite, OrganizationAcceptanceSuite, load_scenarios, simulate_workflow
 from .quality import run_fixture_quality_pack, run_quality_pack
+from .scorecard import ScorecardService
 
-__all__ = ["EndToEndWorkflowSimulator", "EndToEndWorkflowSuite", "FunctionalEvaluationSuite", "OrganizationAcceptanceSuite", "load_scenarios", "run_fixture_quality_pack", "run_quality_pack", "simulate_workflow"]
+__all__ = ["EndToEndWorkflowSimulator", "EndToEndWorkflowSuite", "FunctionalEvaluationSuite", "OrganizationAcceptanceSuite", "load_scenarios", "run_fixture_quality_pack", "run_quality_pack", "simulate_workflow", "ScorecardService"]

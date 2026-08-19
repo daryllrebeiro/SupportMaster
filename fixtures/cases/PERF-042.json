@@ -1,0 +1,18 @@
+{
+  "id": "PERF-042",
+  "summary": "API Gateway response time degrades above 10k rps",
+  "body": "Jira key: PERF-042\nDescription: API gateway response latencies jump to 5000ms under load, triggering circuit breakers.",
+  "reporter": "devops@demo-acme.com",
+  "priority": "high",
+  "product": "APIGateway",
+  "environment": "staging",
+  "steps": ["Apply load to gateway", "Monitor metrics dashboard", "Observe connection drops"],
+  "impact": "Staging APIs are unstable under load test runs.",
+  "evaluation": {
+    "expectations": {
+      "canonical_case": "PASS",
+      "tenant_scoped_investigation": "PASS",
+      "unsafe_resolution_blocked": "PASS"
+    }
+  }
+}
